@@ -7,27 +7,27 @@ use serenity::{
     CreateInteractionResponse, CreateInteractionResponseMessage,
 };
 
+use crate::lang::lang;
 use crate::{Context, Error};
 
 // ── fish data ─────────────────────────────────────────────────────────────────
 
 pub struct FishKind {
     pub id:         &'static str,
-    pub name:       &'static str,
-    pub emoji:      &'static str,
     pub base_price: i64,
     pub price_min:  i64,
     pub price_max:  i64,
+    pub emoji:      &'static str,
 }
 
 pub static FISH: &[FishKind] = &[
-    FishKind { id: "muell",         name: "Plastikmüll",                  emoji: "🗑️", base_price: 0,   price_min: 0,   price_max: 0   },
-    FishKind { id: "hering",        name: "Kleiner Hering",               emoji: "🐟", base_price: 10,  price_min: 6,   price_max: 18  },
-    FishKind { id: "forelle",       name: "Bachforelle",                  emoji: "🐠", base_price: 25,  price_min: 15,  price_max: 45  },
-    FishKind { id: "barsch",        name: "Flussbarsch",                  emoji: "🐡", base_price: 50,  price_min: 30,  price_max: 80  },
-    FishKind { id: "hecht",         name: "Mächtiger Hecht",              emoji: "🦈", base_price: 120, price_min: 70,  price_max: 200 },
-    FishKind { id: "goldfisch",     name: "Goldener Karpfen",             emoji: "✨", base_price: 250, price_min: 150, price_max: 400 },
-    FishKind { id: "quantenbarsch", name: "Der Urzeitliche Quantenbarsch",emoji: "🌌", base_price: 500, price_min: 500, price_max: 500 },
+    FishKind { id: "muell",         emoji: "🗑️", base_price: 0,   price_min: 0,   price_max: 0   },
+    FishKind { id: "hering",        emoji: "🐟", base_price: 10,  price_min: 6,   price_max: 18  },
+    FishKind { id: "forelle",       emoji: "🐠", base_price: 25,  price_min: 15,  price_max: 45  },
+    FishKind { id: "barsch",        emoji: "🐡", base_price: 50,  price_min: 30,  price_max: 80  },
+    FishKind { id: "hecht",         emoji: "🦈", base_price: 120, price_min: 70,  price_max: 200 },
+    FishKind { id: "goldfisch",     emoji: "✨", base_price: 250, price_min: 150, price_max: 400 },
+    FishKind { id: "quantenbarsch", emoji: "🌌", base_price: 500, price_min: 500, price_max: 500 },
 ];
 
 pub fn find_fish(id: &str) -> Option<&'static FishKind> {
@@ -38,34 +38,28 @@ pub fn find_fish(id: &str) -> Option<&'static FishKind> {
 
 pub struct Rod {
     pub id:      &'static str,
-    pub name:    &'static str,
     pub price:   i64,
     pub emoji:   &'static str,
-    pub desc:    &'static str,
     /// Probability weights for each FISH index (must sum to 1000)
     pub weights: [u32; 7],
 }
 
 pub static RODS: &[Rod] = &[
     Rod {
-        id: "grundangel", name: "Grundangel", price: 0, emoji: "🎣",
-        desc: "Die gute alte Grundangel. Kostenlos und zweckmäßig.",
+        id: "grundangel", price: 0, emoji: "🎣",
         //       müll  hering forelle barsch hecht gold  quantum
         weights: [250,  380,   220,    100,   40,   9,    1],
     },
     Rod {
-        id: "profiangel", name: "Profiangel", price: 500, emoji: "🎣",
-        desc: "Bessere Chancen auf seltene Fische.",
+        id: "profiangel", price: 500, emoji: "🎣",
         weights: [150,  300,   270,    170,   80,   25,   5],
     },
     Rod {
-        id: "meeresangel", name: "Meeresangel", price: 2000, emoji: "🎣",
-        desc: "Speziell für schwer fangbare Tiefsee-Arten.",
+        id: "meeresangel", price: 2000, emoji: "🎣",
         weights: [80,   220,   260,    230,   140,  55,   15],
     },
     Rod {
-        id: "quantenangel", name: "Quantenangel", price: 10000, emoji: "🎣",
-        desc: "Überwindet Raum und Zeit. Erhöht die Chance auf den Quantenbarsch enorm.",
+        id: "quantenangel", price: 10000, emoji: "🎣",
         weights: [30,   140,   210,    250,   200,  130,  40],
     },
 ];
@@ -91,7 +85,6 @@ fn roll_fish(rod: &Rod) -> &'static FishKind {
 
 // ── market price helpers ───────────────────────────────────────────────────────
 
-/// Called once at startup and then hourly.
 pub async fn refresh_market_prices(pool: &sqlx::SqlitePool) {
     let now = Utc::now().timestamp();
     for fish in FISH {
@@ -132,11 +125,12 @@ pub async fn angeln(ctx: Context<'_>) -> Result<(), Error> {
             let secs = remaining % 60;
             ctx.send(poise::CreateReply::default().embed(
                 CreateEmbed::new()
-                    .title("🎣 Noch nicht fertig…")
-                    .description(format!(
-                        "Deine Angel ist noch im Wasser. Warte noch **{}:{:02}** Minuten.",
-                        mins, secs,
-                    ))
+                    .title(lang().fish_cooldown_title)
+                    .description(
+                        lang().fish_cooldown_desc
+                            .replace("{mins}", &mins.to_string())
+                            .replace("{secs}", &format!("{:02}", secs))
+                    )
                     .color(0xED4245u32),
             )).await?;
             return Ok(());
@@ -146,6 +140,7 @@ pub async fn angeln(ctx: Context<'_>) -> Result<(), Error> {
     let rod_id = crate::db::get_fishing_rod(&ctx.data().db, guild_id, user_id).await;
     let rod    = find_rod(&rod_id).unwrap_or(&RODS[0]);
     let fish   = roll_fish(rod);
+    let name   = lang().fish_display_name(fish.id);
 
     crate::db::set_fishing_cooldown(&ctx.data().db, guild_id, user_id, now).await;
     crate::db::add_fish_to_inventory(&ctx.data().db, guild_id, user_id, fish.id, now).await;
@@ -154,33 +149,36 @@ pub async fn angeln(ctx: Context<'_>) -> Result<(), Error> {
 
     let (title, desc, color) = if fish.id == "muell" {
         (
-            "Du hast… Müll gefangen.".to_string(),
-            format!("{} **{}**\nDas ist halt was. Du hast es ins Inventar gelegt.", fish.emoji, fish.name),
+            lang().fish_trash_title.to_string(),
+            lang().fish_trash_desc
+                .replace("{emoji}", fish.emoji)
+                .replace("{name}", name),
             0x99AAB5u32,
         )
     } else if fish.id == "quantenbarsch" {
         (
-            "🌌 LEGENDÄRER FANG!".to_string(),
-            format!(
-                "{} **{}**\nEin Fisch aus einer anderen Dimension! Aktueller Marktwert: **{} Coins**.",
-                fish.emoji, fish.name, price,
-            ),
+            lang().fish_legendary_title.to_string(),
+            lang().fish_legendary_desc
+                .replace("{emoji}", fish.emoji)
+                .replace("{name}", name)
+                .replace("{price}", &price.to_string()),
             0xFFD700u32,
         )
     } else {
         (
-            "Du hast etwas gefangen!".to_string(),
-            format!(
-                "{} **{}**\nLandete in deinem Inventar. Aktueller Marktwert: **{} Coins**.",
-                fish.emoji, fish.name, price,
-            ),
+            lang().fish_normal_title.to_string(),
+            lang().fish_normal_desc
+                .replace("{emoji}", fish.emoji)
+                .replace("{name}", name)
+                .replace("{price}", &price.to_string()),
             0x57F287u32,
         )
     };
 
+    let rod_name = lang().rod_display_name(&rod_id);
     let ready_at = now + FISH_COOLDOWN_SECS;
     let remind_btn = CreateButton::new(format!("remind_fish_{}_{}", user_id, ready_at))
-        .label("🔔 In 5 Min erinnern")
+        .label(lang().fish_remind_btn)
         .style(serenity::ButtonStyle::Secondary);
 
     ctx.send(
@@ -190,10 +188,11 @@ pub async fn angeln(ctx: Context<'_>) -> Result<(), Error> {
                     .title(title)
                     .description(desc)
                     .color(color)
-                    .footer(CreateEmbedFooter::new(format!(
-                        "Rute: {} {} | /inventar anzeigen | /alles-verkaufen",
-                        rod.emoji, rod.name,
-                    ))),
+                    .footer(CreateEmbedFooter::new(
+                        lang().fish_footer
+                            .replace("{emoji}", rod.emoji)
+                            .replace("{name}", rod_name)
+                    )),
             )
             .components(vec![CreateActionRow::Buttons(vec![remind_btn])]),
     ).await?;
@@ -219,8 +218,8 @@ pub async fn inventar(ctx: Context<'_>) -> Result<(), Error> {
     if entries.is_empty() {
         ctx.send(poise::CreateReply::default()
             .embed(CreateEmbed::new()
-                .title("🎣 Inventar")
-                .description("Dein Inventar ist leer. Zeit zum Angeln!")
+                .title(lang().fish_inv_empty_title)
+                .description(lang().fish_inv_empty_desc)
                 .color(0x5865F2u32))
             .ephemeral(true),
         ).await?;
@@ -254,14 +253,17 @@ pub async fn inventar(ctx: Context<'_>) -> Result<(), Error> {
                 if let Some(entry) = current.iter().find(|e| e.id == entry_id) {
                     if let Some(fish) = find_fish(&entry.fish_id) {
                         let price = current_price(pool, fish).await;
+                        let name  = lang().fish_display_name(fish.id);
                         crate::db::remove_fish_from_inventory(pool, entry_id).await;
                         if price > 0 {
                             crate::db::add_coins(pool, guild_id, user_id, price).await;
                         }
-                        sold_line = Some(format!(
-                            "✅ {} **{}** für **{} Coins** verkauft!",
-                            fish.emoji, fish.name, price,
-                        ));
+                        sold_line = Some(
+                            lang().fish_inv_sold_line
+                                .replace("{emoji}", fish.emoji)
+                                .replace("{name}", name)
+                                .replace("{price}", &price.to_string())
+                        );
                     }
                 }
             }
@@ -280,8 +282,8 @@ pub async fn inventar(ctx: Context<'_>) -> Result<(), Error> {
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
                         .embed(CreateEmbed::new()
-                            .title("🎣 Inventar")
-                            .description("Inventar ist leer.")
+                            .title(lang().fish_inv_title)
+                            .description(lang().fish_inv_empty_now)
                             .color(0x5865F2u32))
                         .components(vec![]),
                 ),
@@ -321,17 +323,19 @@ async fn build_page(
     } else {
         String::new()
     };
-    desc.push_str(&format!(
-        "**Seite {}/{}**: {} Fische insgesamt\n\n",
-        page + 1, total_pages, entries.len()
-    ));
+    desc.push_str(
+        &lang().fish_inv_page_header
+            .replace("{page}", &(page + 1).to_string())
+            .replace("{total}", &total_pages.to_string())
+            .replace("{count}", &entries.len().to_string())
+    );
 
     let mut sell_buttons = Vec::new();
     for entry in slice {
         let (emoji, name, price) = if let Some(f) = find_fish(&entry.fish_id) {
-            (f.emoji, f.name.to_string(), current_price(pool, f).await)
+            (f.emoji, lang().fish_display_name(f.id), current_price(pool, f).await)
         } else {
-            ("❓", entry.fish_id.clone(), 0)
+            ("❓", entry.fish_id.as_str(), 0)
         };
         desc.push_str(&format!(
             "{} **{}**: {} Coins *(gefangen <t:{}:R>)*\n",
@@ -339,7 +343,7 @@ async fn build_page(
         ));
         sell_buttons.push(
             CreateButton::new(format!("sell_{}", entry.id))
-                .label(format!("Verkaufen ({}C)", price))
+                .label(lang().fish_inv_sell_btn.replace("{price}", &price.to_string()))
                 .style(serenity::ButtonStyle::Success),
         );
     }
@@ -350,22 +354,20 @@ async fn build_page(
     }
     components.push(CreateActionRow::Buttons(vec![
         CreateButton::new("inv_prev")
-            .label("◀ Zurück")
+            .label(lang().fish_inv_prev_btn)
             .style(serenity::ButtonStyle::Secondary)
             .disabled(page == 0),
         CreateButton::new("inv_next")
-            .label("Weiter ▶")
+            .label(lang().fish_inv_next_btn)
             .style(serenity::ButtonStyle::Secondary)
             .disabled(page + 1 >= total_pages),
     ]));
 
     let embed = CreateEmbed::new()
-        .title("🎣 Fischinventar")
+        .title(lang().fish_inv_title)
         .description(desc)
         .color(0x5865F2u32)
-        .footer(CreateEmbedFooter::new(
-            "Klicke auf einen Button um den Fisch zu verkaufen",
-        ));
+        .footer(CreateEmbedFooter::new(lang().fish_inv_footer));
 
     (embed, components)
 }
@@ -386,8 +388,8 @@ pub async fn alles_verkaufen(ctx: Context<'_>) -> Result<(), Error> {
     if entries.is_empty() {
         ctx.send(poise::CreateReply::default().embed(
             CreateEmbed::new()
-                .title("Inventar leer")
-                .description("Du hast keine Fische zu verkaufen.")
+                .title(lang().fish_sell_all_empty_title)
+                .description(lang().fish_sell_all_empty_desc)
                 .color(0x5865F2u32),
         ).ephemeral(true)).await?;
         return Ok(());
@@ -399,8 +401,9 @@ pub async fn alles_verkaufen(ctx: Context<'_>) -> Result<(), Error> {
     for entry in &entries {
         if let Some(fish) = find_fish(&entry.fish_id) {
             let price = current_price(pool, fish).await;
+            let name  = lang().fish_display_name(fish.id);
             total_coins += price;
-            sold_lines.push(format!("{} {}: {} Coins", fish.emoji, fish.name, price));
+            sold_lines.push(format!("{} {}: {} Coins", fish.emoji, name, price));
         }
     }
 
@@ -411,14 +414,18 @@ pub async fn alles_verkaufen(ctx: Context<'_>) -> Result<(), Error> {
     let desc = if sold_lines.len() <= 15 {
         sold_lines.join("\n")
     } else {
-        format!("{}\n…und {} weitere", sold_lines[..15].join("\n"), sold_lines.len() - 15)
+        format!(
+            "{}\n{}",
+            sold_lines[..15].join("\n"),
+            lang().fish_sell_all_more.replace("{count}", &(sold_lines.len() - 15).to_string())
+        )
     };
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
-            .title("Alles verkauft!")
+            .title(lang().fish_sell_all_title)
             .description(desc)
-            .field("Gesamterlös", format!("**{} Coins**", total_coins), false)
+            .field(lang().fish_sell_all_total_field, format!("**{} Coins**", total_coins), false)
             .color(0x57F287u32),
     ).ephemeral(true)).await?;
 
@@ -438,19 +445,17 @@ pub async fn fischmarkt(ctx: Context<'_>) -> Result<(), Error> {
     for fish in FISH {
         if fish.id == "muell" { continue; }
         let price = current_price(pool, fish).await;
+        let name  = lang().fish_display_name(fish.id);
         let trend = if price > fish.base_price { "📈" } else if price < fish.base_price { "📉" } else { "➡️" };
-        lines.push(format!(
-            "{} {} **{}**: {} Coins",
-            trend, fish.emoji, fish.name, price,
-        ));
+        lines.push(format!("{} {} **{}**: {} Coins", trend, fish.emoji, name, price));
     }
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
-            .title("🐟 Fischmarkt: Aktuelle Preise")
+            .title(lang().fish_market_title)
             .description(lines.join("\n"))
             .color(0x5865F2u32)
-            .footer(CreateEmbedFooter::new("Preise ändern sich stündlich")),
+            .footer(CreateEmbedFooter::new(lang().fish_market_footer)),
     )).await?;
 
     Ok(())
@@ -469,30 +474,32 @@ pub async fn angelshop(ctx: Context<'_>) -> Result<(), Error> {
 
     let mut lines = Vec::new();
     for rod in RODS {
+        let name = lang().rod_display_name(rod.id);
+        let desc = lang().rod_display_desc(rod.id);
         let status = if rod.id == owned {
-            "✅ **Aktiv**"
+            lang().rod_shop_status_active
         } else if rod.price == 0 {
-            "Kostenlos"
+            lang().rod_shop_status_free
         } else {
-            "Kaufbar"
+            lang().rod_shop_status_buyable
         };
         let price_str = if rod.price == 0 {
-            "Kostenlos".to_string()
+            lang().rod_price_free.to_string()
         } else {
-            format!("{} Coins", rod.price)
+            lang().rod_price_coins.replace("{price}", &rod.price.to_string())
         };
         lines.push(format!(
             "{} **{}**: {}\n{}\n*{}*",
-            rod.emoji, rod.name, price_str, rod.desc, status,
+            rod.emoji, name, price_str, desc, status,
         ));
     }
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
-            .title("🎣 Angel-Shop")
+            .title(lang().rod_shop_title)
             .description(lines.join("\n\n"))
             .color(0x5865F2u32)
-            .footer(CreateEmbedFooter::new("Nutze /rute-kaufen um eine Rute zu kaufen")),
+            .footer(CreateEmbedFooter::new(lang().rod_shop_footer)),
     ).ephemeral(true)).await?;
 
     Ok(())
@@ -528,13 +535,15 @@ pub async fn rute_kaufen(
         RuteWahl::Quantenangel => "quantenangel",
     };
     let rod = find_rod(rod_id).unwrap();
+    let rod_name = lang().rod_display_name(rod_id);
+    let rod_desc = lang().rod_display_desc(rod_id);
 
     let current_rod = crate::db::get_fishing_rod(pool, guild_id, user_id).await;
     if current_rod == rod_id {
         ctx.send(poise::CreateReply::default().embed(
             CreateEmbed::new()
-                .title("Bereits besessen")
-                .description(format!("Du hast die **{}** bereits.", rod.name))
+                .title(lang().rod_already_owned_title)
+                .description(lang().rod_already_owned_desc.replace("{name}", rod_name))
                 .color(0xFEE75Cu32),
         ).ephemeral(true)).await?;
         return Ok(());
@@ -545,8 +554,8 @@ pub async fn rute_kaufen(
     if new_idx <= current_idx {
         ctx.send(poise::CreateReply::default().embed(
             CreateEmbed::new()
-                .title("Kein Downgrade möglich")
-                .description("Du kannst nicht auf eine schlechtere Rute wechseln.")
+                .title(lang().rod_no_downgrade_title)
+                .description(lang().rod_no_downgrade_desc)
                 .color(0xED4245u32),
         ).ephemeral(true)).await?;
         return Ok(());
@@ -556,11 +565,13 @@ pub async fn rute_kaufen(
     if balance < rod.price {
         ctx.send(poise::CreateReply::default().embed(
             CreateEmbed::new()
-                .title("Zu wenig Coins")
-                .description(format!(
-                    "Du brauchst **{} Coins** für die **{}**, hast aber nur **{} Coins**.",
-                    rod.price, rod.name, balance,
-                ))
+                .title(lang().rod_not_enough_title)
+                .description(
+                    lang().rod_not_enough_desc
+                        .replace("{price}", &rod.price.to_string())
+                        .replace("{name}", rod_name)
+                        .replace("{balance}", &balance.to_string())
+                )
                 .color(0xED4245u32),
         ).ephemeral(true)).await?;
         return Ok(());
@@ -571,11 +582,14 @@ pub async fn rute_kaufen(
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
-            .title("Rute gekauft!")
-            .description(format!(
-                "{} Du hast die **{}** für **{} Coins** gekauft!\n{}",
-                rod.emoji, rod.name, rod.price, rod.desc,
-            ))
+            .title(lang().rod_bought_title)
+            .description(
+                lang().rod_bought_desc
+                    .replace("{emoji}", rod.emoji)
+                    .replace("{name}", rod_name)
+                    .replace("{price}", &rod.price.to_string())
+                    .replace("{desc}", rod_desc)
+            )
             .color(0x57F287u32),
     ).ephemeral(true)).await?;
 

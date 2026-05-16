@@ -4,6 +4,7 @@ use poise::serenity_prelude as serenity;
 use serenity::{ChannelType, CreateEmbed, CreateEmbedAuthor, CreateEmbedFooter, CreateMessage};
 
 use crate::commands::moderation::{err, info};
+use crate::lang::lang;
 use crate::xp::{level_from_xp, progress_bar, total_xp_for_level, xp_progress};
 use crate::{Context, Error};
 
@@ -22,9 +23,8 @@ pub async fn level(
     if target.bot {
         ctx.send(
             poise::CreateReply::default()
-                .embed(err("Ungültig", "Bots haben keinen Rang.")),
-        )
-        .await?;
+                .embed(err("Ungültig", lang().level_no_bot)),
+        ).await?;
         return Ok(());
     }
 
@@ -39,38 +39,37 @@ pub async fn level(
     let guild_icon = ctx.guild().and_then(|g| g.icon_url()).unwrap_or_default();
 
     let color: u32 = match level {
-        0..=4 => 0x99AAB5,
-        5..=9 => 0x57F287,
+        0..=4   => 0x99AAB5,
+        5..=9   => 0x57F287,
         10..=19 => 0x5865F2,
         20..=29 => 0xFEE75C,
         30..=49 => 0xED4245,
-        _ => 0xEB459E,
+        _       => 0xEB459E,
+    };
+
+    let footer_text = if level < 50 {
+        lang().level_footer
+            .replace("{remaining}", &(needed - current).to_string())
+            .replace("{next}", &(level + 1).to_string())
+    } else {
+        lang().level_footer_max.to_string()
     };
 
     let embed = CreateEmbed::new()
         .author(CreateEmbedAuthor::new(target.tag()).icon_url(target.face()))
         .thumbnail(guild_icon)
         .color(color)
-        .field("🏆 Rang", format!("> #{}", rank_pos), true)
-        .field("⭐ Level", format!("> {}", level), true)
-        .field("📊 Gesamt-XP", format!("> {} XP", total_xp), true)
+        .field(lang().level_rank_field,     format!("> #{}", rank_pos), true)
+        .field(lang().level_level_field,    format!("> {}", level),     true)
+        .field(lang().level_xp_field,       format!("> {} XP", total_xp), true)
         .field(
-            "✨ Fortschritt",
+            lang().level_progress_field,
             format!("`{}` {}/{} XP", bar, current, needed),
             false,
         )
-        .footer(CreateEmbedFooter::new(format!(
-            "Noch {} XP bis Level {}",
-            needed - current,
-            level + 1
-        )));
+        .footer(CreateEmbedFooter::new(footer_text));
 
-    ctx.send(
-        poise::CreateReply::default()
-            .embed(embed),
-    )
-    .await?;
-
+    ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())
 }
 
@@ -82,33 +81,24 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), Error> {
     ctx.defer().await?;
 
     let guild_id = ctx.guild_id().unwrap();
-
-    let entries = crate::db::get_guild_leaderboard(&ctx.data().db, guild_id, 10).await;
+    let entries  = crate::db::get_guild_leaderboard(&ctx.data().db, guild_id, 10).await;
 
     if entries.is_empty() {
         ctx.send(
             poise::CreateReply::default()
-                .embed(info(
-                    "Keine Daten",
-                    "Noch keine XP auf diesem Server. Schreib etwas!",
-                )),
-        )
-        .await?;
+                .embed(info("Keine Daten", lang().leaderboard_no_data)),
+        ).await?;
         return Ok(());
     }
 
     let medals = ["🥇", "🥈", "🥉"];
     let mut lines = Vec::new();
     for (i, (user_id, xp)) in entries.iter().enumerate() {
-        let level = level_from_xp(*xp);
+        let level  = level_from_xp(*xp);
         let prefix = medals.get(i).copied().unwrap_or("🔹");
         lines.push(format!(
             "{} **#{}** <@{}>: Level {} · {} XP",
-            prefix,
-            i + 1,
-            user_id,
-            level,
-            xp
+            prefix, i + 1, user_id, level, xp
         ));
     }
 
@@ -116,18 +106,13 @@ pub async fn leaderboard(ctx: Context<'_>) -> Result<(), Error> {
     let guild_name = ctx.guild().map(|g| g.name.clone()).unwrap_or_default();
 
     let embed = CreateEmbed::new()
-        .title("🏆 Bestenliste")
+        .title(lang().leaderboard_title)
         .description(lines.join("\n"))
         .color(0xFEE75Cu32)
         .thumbnail(guild_icon)
-        .footer(CreateEmbedFooter::new(format!("Top 10 auf {}", guild_name)));
+        .footer(CreateEmbedFooter::new(lang().leaderboard_footer.replace("{guild}", &guild_name)));
 
-    ctx.send(
-        poise::CreateReply::default()
-            .embed(embed),
-    )
-    .await?;
-
+    ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())
 }
 
@@ -158,15 +143,11 @@ pub async fn scan_xp(ctx: Context<'_>) -> Result<(), Error> {
         poise::CreateReply::default()
             .embed(
                 CreateEmbed::new()
-                    .description(format!(
-                        "⏳ Scanne {} Textkanäle... Das kann einige Minuten dauern.",
-                        channels.len()
-                    ))
+                    .description(lang().scan_start.replace("{count}", &channels.len().to_string()))
                     .color(0x5865F2u32),
             )
             .ephemeral(true),
-    )
-    .await?;
+    ).await?;
 
     let mut total_messages = 0u64;
     let mut user_counts: HashMap<serenity::UserId, u64> = HashMap::new();
@@ -195,13 +176,10 @@ pub async fn scan_xp(ctx: Context<'_>) -> Result<(), Error> {
                 }
             }
 
-            if len < 100 {
-                break;
-            }
+            if len < 100 { break; }
         }
     }
 
-    // Grant 20 XP per historical message via DB transaction
     let counts: Vec<(serenity::UserId, u64)> = user_counts.iter().map(|(&u, &c)| (u, c)).collect();
     crate::db::bulk_add_xp(&ctx.data().db, guild_id, &counts).await;
 
@@ -209,18 +187,15 @@ pub async fn scan_xp(ctx: Context<'_>) -> Result<(), Error> {
         poise::CreateReply::default()
             .embed(
                 CreateEmbed::new()
-                    .description(format!(
-                        "<:approve:1478760793880137981> **Scan abgeschlossen!**\n\
-                        **{}** Nachrichten von **{}** Nutzern verarbeitet.\n\
-                        Jede Nachricht wurde mit **20 XP** gewertet.",
-                        total_messages,
-                        user_counts.len()
-                    ))
+                    .description(
+                        lang().scan_done
+                            .replace("{messages}", &total_messages.to_string())
+                            .replace("{users}", &user_counts.len().to_string())
+                    )
                     .color(0x57F287u32),
             )
             .ephemeral(true),
-    )
-    .await?;
+    ).await?;
 
     Ok(())
 }
@@ -241,51 +216,51 @@ pub async fn reset_xp(
     ctx.defer_ephemeral().await?;
 
     let guild_id = ctx.guild_id().unwrap();
-
-    let removed = crate::db::reset_user_xp(&ctx.data().db, guild_id, user.id).await;
+    let removed  = crate::db::reset_user_xp(&ctx.data().db, guild_id, user.id).await;
 
     let msg = if removed {
-        format!("XP von **{}** wurde zurückgesetzt.", user.tag())
+        lang().reset_xp_removed.replace("{user}", &user.tag())
     } else {
-        format!("**{}** hatte keine XP.", user.tag())
+        lang().reset_xp_none.replace("{user}", &user.tag())
     };
 
     ctx.send(
         poise::CreateReply::default()
-            .embed(CreateEmbed::new().description(format!(
-                "<:approve:1478760793880137981> {}",
-                msg
-            )).color(0x57F287u32))
+            .embed(CreateEmbed::new()
+                .description(format!("<:approve:1478760793880137981> {}", msg))
+                .color(0x57F287u32))
             .ephemeral(true),
-    )
-    .await?;
+    ).await?;
 
     Ok(())
 }
 
-// ── level-up embed (used by event handler) ────────────────────────────────────
+// ── level-up embed (used by event handler and shop) ───────────────────────────
 
 pub fn level_up_embed(user_id: serenity::UserId, level: u64) -> CreateMessage {
     let coin_reward = level * 100;
+    let footer_text = if level < 50 {
+        lang().level_up_footer_next.replace("{xp}", &total_xp_for_level(level + 1).to_string())
+    } else {
+        lang().level_up_footer_max.to_string()
+    };
     CreateMessage::new().embed(
         CreateEmbed::new()
-            .description(format!(
-                "🎉 <@{}> hat **Level {}** erreicht! **+{} Coins** als Belohnung!",
-                user_id, level, coin_reward
-            ))
+            .description(
+                lang().level_up_msg
+                    .replace("{user}", &user_id.to_string())
+                    .replace("{level}", &level.to_string())
+                    .replace("{coins}", &coin_reward.to_string())
+            )
             .color(match level {
-                0..=4  => 0x99AAB5u32,
-                5..=9  => 0x57F287,
+                0..=4   => 0x99AAB5u32,
+                5..=9   => 0x57F287,
                 10..=19 => 0x5865F2,
                 20..=29 => 0xFEE75C,
                 30..=49 => 0xED4245,
-                _      => 0xEB459E,
+                _       => 0xEB459E,
             })
-            .footer(CreateEmbedFooter::new(if level < 50 {
-                format!("Nächstes Level: {} XP", total_xp_for_level(level + 1))
-            } else {
-                "Level 50 erreicht! Nutze /prestige um weiterzumachen.".to_string()
-            })),
+            .footer(CreateEmbedFooter::new(footer_text)),
     )
 }
 
@@ -308,12 +283,11 @@ pub async fn level_coins_migrate(ctx: Context<'_>) -> Result<(), Error> {
     let mut users_credited: usize = 0;
 
     for (user_id, total_xp) in users {
-        let current_level   = crate::xp::level_from_xp(total_xp) as i64;
+        let current_level    = crate::xp::level_from_xp(total_xp) as i64;
         let already_credited = crate::db::get_credited_level(&ctx.data().db, guild_id, user_id).await as i64;
 
         if already_credited >= current_level { continue; }
 
-        // sum coins from (already_credited+1) to current_level
         let coins: i64 = ((already_credited + 1)..=current_level)
             .map(|l| l * 100)
             .sum();
@@ -330,17 +304,16 @@ pub async fn level_coins_migrate(ctx: Context<'_>) -> Result<(), Error> {
         poise::CreateReply::default()
             .embed(
                 CreateEmbed::new()
-                    .title("✅ Level-Coins Migration abgeschlossen")
-                    .description(format!(
-                        "**{}** Nutzer wurden rückwirkend gutgeschrieben.\n\
-                         Insgesamt **{} Coins** ausgezahlt.",
-                        users_credited, total_credited
-                    ))
+                    .title(lang().migrate_title)
+                    .description(
+                        lang().migrate_desc
+                            .replace("{users}", &users_credited.to_string())
+                            .replace("{coins}", &total_credited.to_string())
+                    )
                     .color(0x57F287u32),
             )
             .ephemeral(true),
-    )
-    .await?;
+    ).await?;
 
     Ok(())
 }

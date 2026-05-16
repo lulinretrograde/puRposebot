@@ -8,7 +8,7 @@ use crate::config::LogConfig;
 // ── init ──────────────────────────────────────────────────────────────────────
 
 pub async fn init() -> SqlitePool {
-    let options = SqliteConnectOptions::from_str("sqlite:idf-soldat.db")
+    let options = SqliteConnectOptions::from_str("sqlite:fuckasskackbot.db")
         .expect("Ungültiger Datenbankpfad")
         .create_if_missing(true);
 

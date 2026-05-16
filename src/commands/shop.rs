@@ -2,58 +2,27 @@ use rand::Rng;
 
 use poise::serenity_prelude as serenity;
 use serenity::{
-    CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter, CreateMessage, EditMessage,
+    CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter, CreateMessage,
 };
 
-use crate::{Context, Error};
 use crate::commands::moderation::err;
+use crate::lang::lang;
+use crate::{Context, Error};
 
 // ── store items ───────────────────────────────────────────────────────────────
 
 struct ShopItem {
-    id:          &'static str,
-    name:        &'static str,
-    emoji:       &'static str,
-    price:       i64,
-    description: &'static str,
+    id:    &'static str,
+    emoji: &'static str,
+    price: i64,
 }
 
 static SHOP_ITEMS: &[ShopItem] = &[
-    ShopItem {
-        id:          "xp_booster",
-        name:        "XP-Booster",
-        emoji:       "🚀",
-        price:       500,
-        description: "Doppelte XP aus allen Quellen für **1 Stunde**.",
-    },
-    ShopItem {
-        id:          "angelkoder",
-        name:        "Angelköder",
-        emoji:       "🪱",
-        price:       300,
-        description: "Nächste **5 Angelversuche** haben +30% Chance auf seltene Fische.",
-    },
-    ShopItem {
-        id:          "diebstahlschutz",
-        name:        "Diebstahlschutz",
-        emoji:       "🔒",
-        price:       400,
-        description: "Der nächste Diebstahl gegen dich **schlägt automatisch fehl**.",
-    },
-    ShopItem {
-        id:          "doppelgehalt",
-        name:        "Doppelgehalt",
-        emoji:       "💰",
-        price:       600,
-        description: "Dein nächstes **tägliches Gehalt** wird verdoppelt.",
-    },
-    ShopItem {
-        id:          "lotto_rabatt",
-        name:        "Lotto-Rabatt",
-        emoji:       "🎟️",
-        price:       150,
-        description: "Dein nächstes Lotto-Ticket kostet nur **50 Coins** statt 100.",
-    },
+    ShopItem { id: "xp_booster",      emoji: "🚀", price: 500  },
+    ShopItem { id: "angelkoder",       emoji: "🪱", price: 300  },
+    ShopItem { id: "diebstahlschutz",  emoji: "🔒", price: 400  },
+    ShopItem { id: "doppelgehalt",     emoji: "💰", price: 600  },
+    ShopItem { id: "lotto_rabatt",     emoji: "🎟️", price: 150  },
 ];
 
 // ── /laden ────────────────────────────────────────────────────────────────────
@@ -69,22 +38,27 @@ pub async fn laden(ctx: Context<'_>) -> Result<(), Error> {
 
     let mut lines = Vec::new();
     for item in SHOP_ITEMS {
+        let name = lang().shop_item_name(item.id);
+        let desc = lang().shop_item_desc(item.id);
         let owned = crate::db::get_shop_item_qty(&ctx.data().db, guild_id, user_id, item.id).await;
-        let owned_str = if owned > 0 { format!(" *({}x vorhanden)*", owned) } else { String::new() };
+        let owned_str = if owned > 0 {
+            lang().shop_owned_qty.replace("{n}", &owned.to_string())
+        } else {
+            String::new()
+        };
         lines.push(format!(
             "{} **{}**: {} Coins{}\n> {}",
-            item.emoji, item.name, item.price, owned_str, item.description
+            item.emoji, name, item.price, owned_str, desc
         ));
     }
 
     let embed = CreateEmbed::new()
-        .title("🏪 Laden")
+        .title(lang().shop_title)
         .description(lines.join("\n\n"))
         .color(0xF1C40Fu32)
-        .footer(CreateEmbedFooter::new(format!(
-            "Dein Kontostand: {} Coins  •  Kaufen: /kaufen <item>",
-            balance
-        )));
+        .footer(CreateEmbedFooter::new(
+            lang().shop_footer.replace("{balance}", &balance.to_string())
+        ));
 
     ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())
@@ -118,22 +92,24 @@ pub async fn kaufen(
     let user     = ctx.author();
 
     let (item_id, price) = match item {
-        ShopChoice::XpBooster       => ("xp_booster",       500i64),
-        ShopChoice::Angelkoder      => ("angelkoder",        300i64),
-        ShopChoice::Diebstahlschutz => ("diebstahlschutz",   400i64),
-        ShopChoice::Doppelgehalt    => ("doppelgehalt",       600i64),
-        ShopChoice::LottoRabatt     => ("lotto_rabatt",       150i64),
+        ShopChoice::XpBooster       => ("xp_booster",      500i64),
+        ShopChoice::Angelkoder      => ("angelkoder",       300i64),
+        ShopChoice::Diebstahlschutz => ("diebstahlschutz",  400i64),
+        ShopChoice::Doppelgehalt    => ("doppelgehalt",      600i64),
+        ShopChoice::LottoRabatt     => ("lotto_rabatt",      150i64),
     };
 
     let shop_item = SHOP_ITEMS.iter().find(|i| i.id == item_id).unwrap();
+    let item_name = lang().shop_item_name(item_id);
+    let item_desc = lang().shop_item_desc(item_id);
 
     let balance = crate::db::get_coins(&ctx.data().db, guild_id, user.id).await;
     if balance < price {
         ctx.send(poise::CreateReply::default().embed(
-            err("Zu wenig Coins", &format!(
-                "Du hast **{} Coins**, brauchst aber **{}**.",
-                balance, price
-            )),
+            err(lang().shop_not_enough_label,
+                &lang().shop_not_enough_desc
+                    .replace("{have}", &balance.to_string())
+                    .replace("{need}", &price.to_string())),
         )).await?;
         return Ok(());
     }
@@ -151,11 +127,15 @@ pub async fn kaufen(
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
             .author(serenity::CreateEmbedAuthor::new(user.tag()).icon_url(user.face()))
-            .title(format!("{} {} gekauft!", shop_item.emoji, shop_item.name))
-            .description(shop_item.description)
+            .title(
+                lang().shop_bought_title
+                    .replace("{emoji}", shop_item.emoji)
+                    .replace("{name}", item_name)
+            )
+            .description(item_desc)
             .color(0x57F287u32)
-            .field("Bezahlt",         format!("-{} Coins", price),           true)
-            .field("Neuer Kontostand", format!("**{} Coins**", new_balance), true),
+            .field(lang().shop_paid_field,        format!("-{} Coins", price),           true)
+            .field(lang().shop_new_balance_field, format!("**{} Coins**", new_balance), true),
     )).await?;
 
     Ok(())
@@ -176,8 +156,8 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
 
     if level < 50 {
         ctx.send(poise::CreateReply::default().embed(
-            err("Noch nicht bereit",
-                &format!("Du bist auf Level **{}**. Prestige erfordert **Level 50**.", level)),
+            err(lang().prestige_not_ready_label,
+                &lang().prestige_not_ready_desc.replace("{level}", &level.to_string())),
         )).await?;
         return Ok(());
     }
@@ -189,20 +169,21 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
     crate::db::set_credited_level(&ctx.data().db, guild_id, user.id, 0).await;
 
     let new_prestige = current_prestige + 1;
-
     let stars = "⭐".repeat(new_prestige as usize);
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
             .author(serenity::CreateEmbedAuthor::new(user.tag()).icon_url(user.face()))
-            .title("🏆 Prestige!")
-            .description(format!(
-                "<@{}> hat **Prestige {}** erreicht! {}\n\nDein XP wurde zurückgesetzt. Deine Coins bleiben.",
-                user.id, new_prestige, stars
-            ))
+            .title(lang().prestige_title)
+            .description(
+                lang().prestige_desc
+                    .replace("{user}", &user.id.to_string())
+                    .replace("{prestige}", &new_prestige.to_string())
+                    .replace("{stars}", &stars)
+            )
             .color(0xEB459Eu32)
-            .field("Prestige-Rang", format!("**{}**", new_prestige), true)
-            .field("XP zurückgesetzt", "Zurück auf Level 0", true),
+            .field(lang().prestige_rank_field,     format!("**{}**", new_prestige), true)
+            .field(lang().prestige_xp_reset_field, lang().prestige_xp_reset_value, true),
     )).await?;
 
     Ok(())
@@ -213,8 +194,7 @@ pub async fn prestige(ctx: Context<'_>) -> Result<(), Error> {
 pub fn schedule_salary(ctx: serenity::Context, pool: sqlx::SqlitePool) {
     tokio::spawn(async move {
         loop {
-            // sleep until next midnight UTC
-            let now     = chrono::Utc::now();
+            let now      = chrono::Utc::now();
             let tomorrow = (now + chrono::Duration::days(1))
                 .date_naive()
                 .and_hms_opt(0, 0, 0)
@@ -256,15 +236,14 @@ async fn run_salary(ctx: &serenity::Context, pool: &sqlx::SqlitePool) {
         if count > 0 {
             let _ = bot_ch.send_message(ctx, CreateMessage::new().embed(
                 CreateEmbed::new()
-                    .title("💼 Tagesgehalt ausgezahlt!")
-                    .description(format!(
-                        "**{}** Mitglieder haben ihr Gehalt erhalten.\n\
-                         Insgesamt wurden **{} Coins** ausgezahlt.\n\
-                         Dein Gehalt: **Level × 100 Coins**",
-                        count, total_paid
-                    ))
+                    .title(lang().salary_title)
+                    .description(
+                        lang().salary_desc
+                            .replace("{count}", &count.to_string())
+                            .replace("{total}", &total_paid.to_string())
+                    )
                     .color(0xF1C40Fu32)
-                    .footer(CreateEmbedFooter::new("Nächste Auszahlung in 24 Stunden")),
+                    .footer(CreateEmbedFooter::new(lang().salary_footer)),
             )).await;
         }
     }
@@ -290,22 +269,8 @@ pub async fn restore_loot_drops(ctx: serenity::Context, pool: sqlx::SqlitePool) 
     let pending = crate::db::get_pending_loot_drops(&pool).await;
     for drop in pending {
         if drop.expires_at <= now {
-            // already expired: edit message to remove button, then purge the DB row
-            let edited = drop.channel_id.edit_message(
-                &ctx,
-                drop.message_id,
-                EditMessage::new()
-                    .embed(
-                        CreateEmbed::new()
-                            .title("📦 Loot-Drop: Abgelaufen")
-                            .description("Dieser Drop ist abgelaufen. Niemand hat ihn rechtzeitig eingesammelt.")
-                            .color(0x99AAB5u32),
-                    )
-                    .components(vec![]),
-            ).await;
-            if edited.is_err() {
-                let _ = drop.channel_id.delete_message(&ctx, drop.message_id).await;
-            }
+            // already expired: delete the message so it doesn't pile up
+            let _ = drop.channel_id.delete_message(&ctx, drop.message_id).await;
             crate::db::delete_loot_drop_row(&pool, drop.id).await;
         } else {
             // still live: spawn a cleanup timer for the remaining time
@@ -327,26 +292,10 @@ async fn expire_loot_drop(
     channel_id: serenity::ChannelId,
     message_id: serenity::MessageId,
 ) {
-    // Try to atomically claim it; if already claimed by a user, leave the message alone.
     let won = crate::db::claim_loot_drop(pool, drop_id).await;
     if won {
-        // Nobody claimed it: edit the message to remove the button so users can't click
-        // a dead drop. Fall back to deletion if the edit fails.
-        let edited = channel_id.edit_message(
-            ctx,
-            message_id,
-            EditMessage::new()
-                .embed(
-                    CreateEmbed::new()
-                        .title("📦 Loot-Drop: Abgelaufen")
-                        .description("Dieser Drop ist abgelaufen. Niemand hat ihn rechtzeitig eingesammelt.")
-                        .color(0x99AAB5u32),
-                )
-                .components(vec![]),
-        ).await;
-        if edited.is_err() {
-            let _ = channel_id.delete_message(ctx, message_id).await;
-        }
+        // Nobody claimed it: delete so expired drops don't pile up in the channel.
+        let _ = channel_id.delete_message(ctx, message_id).await;
     }
     crate::db::delete_loot_drop_row(pool, drop_id).await;
 }
@@ -357,26 +306,31 @@ async fn spawn_loot_drop(
 ) {
     let guilds = crate::db::get_guilds_with_bot_channel(pool).await;
     for (guild_id, bot_ch) in guilds {
-        // Skip if there is already an unclaimed drop active for this guild.
         if crate::db::has_active_loot_drop(pool, guild_id).await {
             continue;
         }
 
         let drop_token = format!("loot_{}_{}", guild_id, chrono::Utc::now().timestamp());
 
-        let (tier_name, color, fish_id, coin_min, coin_max, bonus_xp) = {
+        let (tier_key, color, fish_id, coin_min, coin_max, bonus_xp) = {
             let mut rng = rand::thread_rng();
             let roll: u8 = rng.gen_range(0..100);
             if roll < 60 {
                 let fish = if rng.gen_bool(0.5) { "hering" } else { "forelle" };
-                ("Gewöhnlich", 0x99AAB5u32, fish, 50i64, 100i64, 0i64)
+                ("common", 0x99AAB5u32, fish, 50i64, 100i64, 0i64)
             } else if roll < 90 {
                 let fish = if rng.gen_bool(0.5) { "barsch" } else { "hecht" };
-                ("Selten", 0x5865F2u32, fish, 100i64, 200i64, 0i64)
+                ("rare", 0x5865F2u32, fish, 100i64, 200i64, 0i64)
             } else {
                 let fish = if rng.gen_bool(0.5) { "goldfisch" } else { "quantenbarsch" };
-                ("Legendär", 0xFEE75Cu32, fish, 300i64, 500i64, 50i64)
+                ("legendary", 0xFEE75Cu32, fish, 300i64, 500i64, 50i64)
             }
+        };
+
+        let tier_name = match tier_key {
+            "common"    => lang().loot_tier_common,
+            "rare"      => lang().loot_tier_rare,
+            _           => lang().loot_tier_legendary,
         };
 
         let coins: i64 = {
@@ -385,15 +339,17 @@ async fn spawn_loot_drop(
         };
 
         let fish_kind = crate::commands::fishing::find_fish(fish_id);
-        let fish_name = fish_kind.map(|f| format!("{} {}", f.emoji, f.name)).unwrap_or_default();
+        let fish_display = fish_kind.map(|f| format!("{} {}", f.emoji, lang().fish_display_name(f.id))).unwrap_or_default();
 
-        let mut desc = format!("Ein zufälliger Loot-Drop ist erschienen!\n\n**{}** + **{} Coins**", fish_name, coins);
+        let mut desc = lang().loot_desc
+            .replace("{fish}", &fish_display)
+            .replace("{coins}", &coins.to_string());
         if bonus_xp > 0 {
-            desc.push_str(&format!(" + **{} Bonus-XP**", bonus_xp));
+            desc.push_str(&lang().loot_desc_xp.replace("{xp}", &bonus_xp.to_string()));
         }
 
         let claim_btn = CreateButton::new(format!("loot_claim_{}", drop_token))
-            .label("📦 Einsammeln")
+            .label(lang().loot_claim_btn)
             .style(serenity::ButtonStyle::Success);
 
         let msg = bot_ch.send_message(ctx, CreateMessage::new()
@@ -402,7 +358,7 @@ async fn spawn_loot_drop(
                     .title(format!("📦 Loot-Drop: {}", tier_name))
                     .description(&desc)
                     .color(color)
-                    .footer(CreateEmbedFooter::new("Nur der Erste bekommt den Drop: läuft in 30 Minuten ab.")),
+                    .footer(CreateEmbedFooter::new(lang().loot_footer)),
             )
             .components(vec![CreateActionRow::Buttons(vec![claim_btn])])
         ).await;
@@ -417,7 +373,6 @@ async fn spawn_loot_drop(
                 guild_id, bot_ch, msg.id, drop_id
             );
 
-            // auto-expire after 30 minutes
             let ctx_c  = ctx.clone();
             let pool_c = pool.clone();
             let msg_id = msg.id;
@@ -444,7 +399,7 @@ pub async fn handle_loot_claim(
         None => {
             let _ = comp.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content("Fehler: kein Server.")
+                    .content(lang().loot_no_guild)
                     .ephemeral(true),
             )).await;
             return;
@@ -455,7 +410,6 @@ pub async fn handle_loot_claim(
     let channel = comp.channel_id;
     let claimer = &comp.user;
 
-    // Look up the drop in the DB
     let drop = match crate::db::get_loot_drop_by_message(pool, channel, msg_id).await {
         Some(d) => d,
         None => {
@@ -465,18 +419,17 @@ pub async fn handle_loot_claim(
             );
             let _ = comp.create_response(ctx, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .content("Dieser Drop wurde bereits eingesammelt oder ist abgelaufen.")
+                    .content(lang().loot_already_claimed)
                     .ephemeral(true),
             )).await;
             return;
         }
     };
 
-    // Atomically claim it: prevents race if two users click at once
     if !crate::db::claim_loot_drop(pool, drop.id).await {
         let _ = comp.create_response(ctx, CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
-                .content("Dieser Drop wurde bereits eingesammelt oder ist abgelaufen.")
+                .content(lang().loot_already_claimed)
                 .ephemeral(true),
         )).await;
         return;
@@ -486,7 +439,6 @@ pub async fn handle_loot_claim(
     let coins    = drop.coins;
     let bonus_xp = drop.bonus_xp as u64;
 
-    // Grant fish + coins + XP
     let now = chrono::Utc::now().timestamp();
     crate::db::add_fish_to_inventory(pool, guild_id, claimer.id, fish_id, now).await;
     crate::db::add_coins(pool, guild_id, claimer.id, coins).await;
@@ -507,28 +459,30 @@ pub async fn handle_loot_claim(
         }
     }
 
-    // Clean up DB row (already marked claimed, now fully remove)
     crate::db::delete_loot_drop_row(pool, drop.id).await;
 
     let fish_kind = crate::commands::fishing::find_fish(fish_id);
-    let fish_name = fish_kind.map(|f| format!("{} {}", f.emoji, f.name)).unwrap_or_default();
+    let fish_display = fish_kind.map(|f| format!("{} {}", f.emoji, lang().fish_display_name(f.id))).unwrap_or_default();
+
+    let mut claimed_desc = lang().loot_claimed_desc
+        .replace("{user}", &claimer.id.to_string())
+        .replace("{fish}", &fish_display)
+        .replace("{coins}", &coins.to_string());
+    if bonus_xp > 0 {
+        claimed_desc.push_str(&lang().loot_claimed_desc_xp.replace("{xp}", &bonus_xp.to_string()));
+    }
 
     let _ = comp.create_response(ctx, CreateInteractionResponse::UpdateMessage(
         CreateInteractionResponseMessage::new()
             .embed(
                 CreateEmbed::new()
-                    .title("📦 Loot-Drop: Eingesammelt!")
-                    .description(format!(
-                        "<@{}> hat den Drop eingesammelt!\n\n**{}** + **{} Coins**{}",
-                        claimer.id, fish_name, coins,
-                        if bonus_xp > 0 { format!(" + **{} XP**", bonus_xp) } else { String::new() }
-                    ))
+                    .title(lang().loot_claimed_title)
+                    .description(claimed_desc)
                     .color(0x57F287u32),
             )
             .components(vec![])
     )).await;
 
-    // Delete the message after 30 seconds so it doesn't linger
     let ctx_del = ctx.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;

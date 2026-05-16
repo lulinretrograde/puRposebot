@@ -3,7 +3,7 @@
 # Usage: ./restart.sh
 set -euo pipefail
 
-PM2_NAME="idf-soldat"
+PM2_NAME="fuckasskackbot"
 
 echo "==> Building release binary..."
 ~/.cargo/bin/cargo build --release
@@ -26,14 +26,14 @@ for p in procs:
 done
 
 echo "==> Killing any remaining processes..."
-pkill -9 -x idf-soldat 2>/dev/null || true
+pkill -9 -x fuckasskackbot 2>/dev/null || true
 
 # Wait until fully clear
 for i in $(seq 1 20); do
-    pgrep -x idf-soldat > /dev/null 2>&1 || break
+    pgrep -x fuckasskackbot > /dev/null 2>&1 || break
     sleep 0.5
 done
-pkill -9 -x idf-soldat 2>/dev/null || true
+pkill -9 -x fuckasskackbot 2>/dev/null || true
 sleep 0.5
 
 echo "==> Starting PM2 job..."
@@ -41,4 +41,4 @@ pm2 start "$PM2_NAME"
 
 sleep 2
 echo "==> Running instances:"
-ps aux | grep idf-soldat | grep -v grep | grep -v bash
+ps aux | grep fuckasskackbot | grep -v grep | grep -v bash

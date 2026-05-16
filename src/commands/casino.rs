@@ -8,6 +8,7 @@ use serenity::{
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
 };
 
+use crate::lang::lang;
 use crate::{Context, Error};
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ async fn in_casino_channel(ctx: &Context<'_>) -> bool {
             ctx.send(poise::CreateReply::default()
                 .embed(CreateEmbed::new()
                     .title("Falscher Kanal")
-                    .description(format!("Casino-Befehle sind nur in <#{}> erlaubt.", ch))
+                    .description(lang().casino_wrong_channel.replace("{channel}", &ch.to_string()))
                     .color(0xED4245u32))
                 .ephemeral(true),
             ).await.ok();
@@ -44,8 +45,12 @@ async fn validate_bet(ctx: &Context<'_>, bet: i64) -> bool {
     if bet < MIN_BET || bet > MAX_BET {
         ctx.send(poise::CreateReply::default()
             .embed(CreateEmbed::new()
-                .title("Ungültiger Einsatz")
-                .description(format!("Einsatz muss zwischen **{} und {} Coins** liegen.", MIN_BET, MAX_BET))
+                .title(lang().casino_invalid_bet_title)
+                .description(
+                    lang().casino_invalid_bet_desc
+                        .replace("{min}", &MIN_BET.to_string())
+                        .replace("{max}", &MAX_BET.to_string())
+                )
                 .color(0xED4245u32))
             .ephemeral(true),
         ).await.ok();
@@ -57,8 +62,12 @@ async fn validate_bet(ctx: &Context<'_>, bet: i64) -> bool {
     if balance < bet {
         ctx.send(poise::CreateReply::default()
             .embed(CreateEmbed::new()
-                .title("Nicht genug Coins")
-                .description(format!("Du hast **{} Coins**, brauchst aber **{}**.", balance, bet))
+                .title(lang().casino_not_enough_title)
+                .description(
+                    lang().casino_not_enough_desc
+                        .replace("{have}", &balance.to_string())
+                        .replace("{need}", &bet.to_string())
+                )
                 .color(0xED4245u32))
             .ephemeral(true),
         ).await.ok();
@@ -70,8 +79,12 @@ async fn validate_bet(ctx: &Context<'_>, bet: i64) -> bool {
         if lost >= limit {
             ctx.send(poise::CreateReply::default()
                 .embed(CreateEmbed::new()
-                    .title("Tageslimit erreicht")
-                    .description(format!("Du hast heute **{} Coins** verloren (Limit: {}).", lost, limit))
+                    .title(lang().casino_daily_limit_title)
+                    .description(
+                        lang().casino_daily_limit_desc
+                            .replace("{lost}", &lost.to_string())
+                            .replace("{limit}", &limit.to_string())
+                    )
                     .color(0xFEE75Cu32))
                 .ephemeral(true),
             ).await.ok();
@@ -83,7 +96,6 @@ async fn validate_bet(ctx: &Context<'_>, bet: i64) -> bool {
 
 // ── payout helpers ────────────────────────────────────────────────────────────
 
-/// Win: adds profit to user, returns (new_balance, profit, streak_bonus_applied).
 async fn pay_win(
     pool:       &sqlx::SqlitePool,
     guild_id:   serenity::GuildId,
@@ -102,7 +114,6 @@ async fn pay_win(
     (new_bal, profit, streak_bonus)
 }
 
-/// Loss: deducts bet from user, returns (new_balance, consolation_given).
 async fn pay_loss(
     pool:     &sqlx::SqlitePool,
     guild_id: serenity::GuildId,
@@ -122,11 +133,11 @@ async fn pay_loss(
 }
 
 fn consolation_note(given: bool) -> &'static str {
-    if given { "\n\n🎁 *Trostpreis: +150 Coins für die Pechsträhne!*" } else { "" }
+    if given { lang().casino_consolation_note } else { "" }
 }
 
 fn streak_note(given: bool) -> &'static str {
-    if given { " *(+10% Gewinnsträhnen-Bonus)*" } else { "" }
+    if given { lang().casino_streak_note } else { "" }
 }
 
 // ── cards ─────────────────────────────────────────────────────────────────────
@@ -219,9 +230,9 @@ pub async fn slots(
         let m = SLOTS_SYMBOLS[r0].2;
         (format!("JACKPOT! {} {} {}", e0, e1, e2), m, 0xFFD700u32)
     } else if r0 == r1 || r1 == r2 {
-        ("Zwei gleiche!".to_string(), 0.5, 0xFEE75Cu32)
+        (lang().casino_slots_two_match.to_string(), 0.5, 0xFEE75Cu32)
     } else {
-        ("Kein Treffer".to_string(), 0.0, 0xED4245u32)
+        (lang().casino_slots_no_match.to_string(), 0.0, 0xED4245u32)
     };
 
     let (desc, color) = if multiplier > 0.0 {
@@ -269,7 +280,6 @@ pub async fn blackjack(
     let mut player = vec![draw(&mut deck), draw(&mut deck)];
     let mut dealer = vec![draw(&mut deck), draw(&mut deck)];
     let mut bet    = einsatz;
-    let mut first_action = true;
 
     // Natural blackjack
     if hand_total(&player) == 21 {
@@ -310,7 +320,7 @@ pub async fn blackjack(
     ]);
 
     let handle = ctx.send(poise::CreateReply::default()
-        .embed(bj_embed(&player, &dealer, bet, "Was möchtest du tun?"))
+        .embed(bj_embed(&player, &dealer, bet, lang().casino_bj_prompt))
         .components(vec![action_row(true)]),
     ).await?;
     let msg = handle.message().await?;
@@ -321,23 +331,19 @@ pub async fn blackjack(
             .timeout(std::time::Duration::from_secs(60))
             .await
         else {
-            // Timeout → stand
-            break;
+            break; // Timeout → stand
         };
 
         let id = interaction.data.custom_id.as_str();
 
         if id == "bj_hit" || id == "bj_double" {
             if id == "bj_double" {
-                // Double bet if affordable
                 let balance = crate::db::get_coins(pool, guild_id, user_id).await;
                 if balance >= bet { bet *= 2; }
             }
             player.push(draw(&mut deck));
-            first_action = false;
 
             if hand_total(&player) > 21 {
-                // Bust
                 interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
                         .components(vec![])
@@ -361,10 +367,9 @@ pub async fn blackjack(
             }
 
             if id == "bj_double" {
-                // After double: auto-stand
                 interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                        .embed(bj_embed(&player, &dealer, bet, "Double Down: stehe automatisch."))
+                        .embed(bj_embed(&player, &dealer, bet, lang().casino_bj_double_auto))
                         .components(vec![]),
                 )).await.ok();
                 break;
@@ -372,22 +377,20 @@ pub async fn blackjack(
 
             interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
-                    .embed(bj_embed(&player, &dealer, bet, "Noch eine Karte?"))
+                    .embed(bj_embed(&player, &dealer, bet, lang().casino_bj_more))
                     .components(vec![action_row(false)]),
             )).await.ok();
 
         } else {
-            // Stand
             interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
-                    .embed(bj_embed(&player, &dealer, bet, "Du stehst. Dealer zieht…"))
+                    .embed(bj_embed(&player, &dealer, bet, lang().casino_bj_stand))
                     .components(vec![]),
             )).await.ok();
             break;
         }
     }
 
-    // Dealer draws to 17
     while hand_total(&dealer) < 17 {
         dealer.push(draw(&mut deck));
     }
@@ -396,18 +399,16 @@ pub async fn blackjack(
     let dealer_val = hand_total(&dealer);
 
     let (title, multiplier, won, color) = if dealer_val > 21 {
-        ("Dealer bust: du gewinnst!", 2.0, true, 0x57F287u32)
+        (lang().casino_bj_dealer_bust, 2.0, true, 0x57F287u32)
     } else if player_val > dealer_val {
-        ("Du gewinnst!", 2.0, true, 0x57F287u32)
+        (lang().casino_bj_win,         2.0, true, 0x57F287u32)
     } else if player_val == dealer_val {
-        ("Unentschieden: Push!", 1.0, true, 0xFEE75Cu32)
+        (lang().casino_bj_push,        1.0, true, 0xFEE75Cu32)
     } else {
-        ("Dealer gewinnt.", 0.0, false, 0xED4245u32)
+        (lang().casino_bj_loss,        0.0, false, 0xED4245u32)
     };
 
     let result_embed = if multiplier == 1.0 {
-        // Push: return bet
-        crate::db::add_coins(pool, guild_id, user_id, 0).await;
         let new_bal = crate::db::get_coins(pool, guild_id, user_id).await;
         CreateEmbed::new()
             .title(format!("🃏 Blackjack: {}", title))
@@ -492,7 +493,7 @@ pub async fn wuerfeln(
     };
 
     ctx.send(poise::CreateReply::default().embed(
-        CreateEmbed::new().title("🎲 Würfeln").description(desc).color(color),
+        CreateEmbed::new().title(lang().casino_dice_title).description(desc).color(color),
     )).await?;
     Ok(())
 }
@@ -521,7 +522,7 @@ pub async fn muenzwurf(
     let pool     = &ctx.data().db;
 
     let heads: bool = { let mut rng = rand::thread_rng(); rng.gen_bool(0.5) };
-    let result_str = if heads { "Kopf 🪙" } else { "Zahl 🔢" };
+    let result_str = if heads { lang().casino_coinflip_heads } else { lang().casino_coinflip_tails };
     let tipp_str   = match seite { MuenzSeite::Kopf => "Kopf", MuenzSeite::Zahl => "Zahl" };
     let won = matches!((&seite, heads), (MuenzSeite::Kopf, true) | (MuenzSeite::Zahl, false));
 
@@ -540,7 +541,7 @@ pub async fn muenzwurf(
     };
 
     ctx.send(poise::CreateReply::default().embed(
-        CreateEmbed::new().title("🪙 Münzwurf").description(desc).color(color),
+        CreateEmbed::new().title(lang().casino_coinflip_title).description(desc).color(color),
     )).await?;
     Ok(())
 }
@@ -575,14 +576,13 @@ pub async fn roulette(
     if !in_casino_channel(&ctx).await { return Ok(()); }
     if !validate_bet(&ctx, einsatz).await { return Ok(()); }
 
-    // Validate number bet
     if matches!(wette, RouletteWette::Zahl) {
         let n = zahl.unwrap_or(255);
         if n > 36 {
             ctx.send(poise::CreateReply::default()
                 .embed(CreateEmbed::new()
-                    .title("Ungültige Zahl")
-                    .description("Bitte gib eine Zahl zwischen 0 und 36 an.")
+                    .title(lang().casino_roulette_invalid_title)
+                    .description(lang().casino_roulette_invalid_desc)
                     .color(0xED4245u32))
                 .ephemeral(true),
             ).await?;
@@ -595,7 +595,7 @@ pub async fn roulette(
     let pool     = &ctx.data().db;
 
     let result: u8 = { let mut rng = rand::thread_rng(); rng.gen_range(0..=36) };
-    let is_red   = RED_NUMS.contains(&result);
+    let is_red    = RED_NUMS.contains(&result);
     let color_str = if result == 0 { "🟢 0" } else if is_red { "🔴" } else { "⚫" };
 
     let (won, multiplier, wette_str) = match &wette {
@@ -626,7 +626,7 @@ pub async fn roulette(
     };
 
     ctx.send(poise::CreateReply::default().embed(
-        CreateEmbed::new().title("🎡 Roulette").description(desc).color(color),
+        CreateEmbed::new().title(lang().casino_roulette_title).description(desc).color(color),
     )).await?;
     Ok(())
 }
@@ -656,7 +656,7 @@ pub async fn kartenspiel(
     let hol_embed = |current: Card, round: usize, msg: &str| {
         let next_mult = HOL_MULTIPLIERS.get(round).copied().unwrap_or(*HOL_MULTIPLIERS.last().unwrap());
         CreateEmbed::new()
-            .title("🎴 Höher oder Tiefer")
+            .title(lang().casino_hol_title)
             .description(format!(
                 "Aktuelle Karte: **{}**\n\n{}\nNächster Multiplikator: **{}×**",
                 card_str(current), msg, next_mult,
@@ -666,15 +666,15 @@ pub async fn kartenspiel(
     };
 
     let hol_buttons = |cash_possible: bool| CreateActionRow::Buttons(vec![
-        CreateButton::new("hol_higher").label("Höher ▲").style(serenity::ButtonStyle::Success),
-        CreateButton::new("hol_lower").label("Tiefer ▼").style(serenity::ButtonStyle::Danger),
-        CreateButton::new("hol_cash").label("Auszahlen 💰")
+        CreateButton::new("hol_higher").label(lang().casino_hol_higher_btn).style(serenity::ButtonStyle::Success),
+        CreateButton::new("hol_lower").label(lang().casino_hol_lower_btn).style(serenity::ButtonStyle::Danger),
+        CreateButton::new("hol_cash").label(lang().casino_hol_cash_btn)
             .style(serenity::ButtonStyle::Secondary)
             .disabled(!cash_possible),
     ]);
 
     let handle = ctx.send(poise::CreateReply::default()
-        .embed(hol_embed(current, round, "Ist die nächste Karte höher oder tiefer?"))
+        .embed(hol_embed(current, round, lang().casino_hol_prompt))
         .components(vec![hol_buttons(false)]),
     ).await?;
     let msg = handle.message().await?;
@@ -685,7 +685,6 @@ pub async fn kartenspiel(
             .timeout(std::time::Duration::from_secs(60))
             .await
         else {
-            // Timeout → lose
             pay_loss(pool, guild_id, user_id, einsatz).await;
             return Ok(());
         };
@@ -693,7 +692,6 @@ pub async fn kartenspiel(
         let id = interaction.data.custom_id.as_str();
 
         if id == "hol_cash" {
-            // Cash out at current multiplier
             let mult = HOL_MULTIPLIERS.get(round.saturating_sub(1)).copied().unwrap_or(1.0);
             interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new().components(vec![]),
@@ -701,7 +699,7 @@ pub async fn kartenspiel(
             let (new_bal, profit, bonus) = pay_win(pool, guild_id, user_id, einsatz, mult).await;
             msg.channel_id.send_message(ctx.http(), CreateMessage::new().embed(
                 CreateEmbed::new()
-                    .title("🎴 Auszahlung!")
+                    .title(lang().casino_hol_cash_title)
                     .description(format!("**+{} Coins** ({}×)!{}\nKontostand: **{} Coins**", profit, mult, streak_note(bonus), new_bal))
                     .color(0x57F287u32),
             )).await.ok();
@@ -721,8 +719,12 @@ pub async fn kartenspiel(
             interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
                     .embed(CreateEmbed::new()
-                        .title("🎴 Falsch!")
-                        .description(format!("Nächste Karte war **{}**: falsch geraten!\n\n**-{} Coins**", card_str(next), einsatz))
+                        .title(lang().casino_hol_wrong_title)
+                        .description(
+                            lang().casino_hol_wrong_desc
+                                .replace("{card}", &card_str(next))
+                                .replace("{bet}", &einsatz.to_string())
+                        )
                         .color(0xED4245u32))
                     .components(vec![]),
             )).await.ok();
@@ -739,13 +741,12 @@ pub async fn kartenspiel(
         round  += 1;
 
         if round >= HOL_MULTIPLIERS.len() {
-            // Max rounds reached: auto cash out
             let mult = *HOL_MULTIPLIERS.last().unwrap();
             interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new()
                     .embed(CreateEmbed::new()
-                        .title("🎴 Maximum erreicht!")
-                        .description(format!("Nächste Karte war **{}**: korrekt!\nMaximale Runden erreicht!", card_str(current)))
+                        .title(lang().casino_hol_max_title)
+                        .description(lang().casino_hol_max_desc.replace("{card}", &card_str(current)))
                         .color(0xFFD700u32))
                     .components(vec![]),
             )).await.ok();
@@ -760,7 +761,7 @@ pub async fn kartenspiel(
 
         interaction.create_response(ctx.http(), CreateInteractionResponse::UpdateMessage(
             CreateInteractionResponseMessage::new()
-                .embed(hol_embed(current, round, &format!("✅ Richtig! Karte war **{}**. Weiter?", card_str(current))))
+                .embed(hol_embed(current, round, &lang().casino_hol_correct_fmt.replace("{card}", &card_str(current))))
                 .components(vec![hol_buttons(round > 0)]),
         )).await.ok();
     }
@@ -797,8 +798,13 @@ pub async fn lotto(
     if balance < total {
         ctx.send(poise::CreateReply::default()
             .embed(CreateEmbed::new()
-                .title("Nicht genug Coins")
-                .description(format!("{} Tickets kosten **{} Coins**, du hast nur **{}**.", anzahl, total, balance))
+                .title(lang().casino_not_enough_title)
+                .description(
+                    lang().casino_lotto_not_enough
+                        .replace("{n}", &anzahl.to_string())
+                        .replace("{total}", &total.to_string())
+                        .replace("{have}", &balance.to_string())
+                )
                 .color(0xED4245u32))
             .ephemeral(true),
         ).await?;
@@ -808,7 +814,6 @@ pub async fn lotto(
     crate::db::add_coins(pool, guild_id, user_id, -total).await;
     let drawing = crate::db::get_or_create_lotto_drawing(pool, guild_id, ctx.channel_id()).await;
 
-    // 50% of each ticket to jackpot, 50% to vault
     let jackpot_share = (LOTTO_TICKET_PRICE / 2) * anzahl;
     crate::db::add_to_lotto_jackpot(pool, drawing.id, jackpot_share).await;
     crate::db::casino_vault_add(pool, guild_id, total - jackpot_share).await;
@@ -826,13 +831,16 @@ pub async fn lotto(
 
     ctx.send(poise::CreateReply::default()
         .embed(CreateEmbed::new()
-            .title("🎟️ Lotto-Tickets gekauft!")
-            .description(format!(
-                "**{} Ticket(s)** für **{} Coins**\n\n{}\n\nAktueller Jackpot: **{} Coins**",
-                anzahl, total, ticket_lines.join("\n"), jackpot,
-            ))
+            .title(lang().casino_lotto_bought_title)
+            .description(
+                lang().casino_lotto_bought_desc
+                    .replace("{n}", &anzahl.to_string())
+                    .replace("{total}", &total.to_string())
+                    .replace("{tickets}", &ticket_lines.join("\n"))
+                    .replace("{jackpot}", &jackpot.to_string())
+            )
             .color(0x5865F2u32)
-            .footer(CreateEmbedFooter::new("Ziehung täglich um Mitternacht UTC")))
+            .footer(CreateEmbedFooter::new(lang().casino_lotto_footer)))
         .ephemeral(true),
     ).await?;
     Ok(())
@@ -844,7 +852,6 @@ pub async fn run_lotto_drawing(ctx: &serenity::Context, pool: &sqlx::SqlitePool)
     for (guild_id, drawing) in active {
         let tickets = crate::db::get_lotto_tickets(pool, drawing.id).await;
         if tickets.is_empty() {
-            // No tickets: just close and create new
             crate::db::close_lotto_drawing(pool, drawing.id, &[]).await;
             continue;
         }
@@ -852,7 +859,6 @@ pub async fn run_lotto_drawing(ctx: &serenity::Context, pool: &sqlx::SqlitePool)
         let winning: Vec<u8> = random_lotto_numbers();
         crate::db::close_lotto_drawing(pool, drawing.id, &winning).await;
 
-        // Calculate winners
         let mut winners_3 = Vec::new();
         let mut winners_4 = Vec::new();
         let mut winners_5 = Vec::new();
@@ -870,7 +876,7 @@ pub async fn run_lotto_drawing(ctx: &serenity::Context, pool: &sqlx::SqlitePool)
         }
 
         let winning_str: Vec<String> = winning.iter().map(|n| format!("{:02}", n)).collect();
-        let mut desc = format!("**Gewinnzahlen:** {}\n\n", winning_str.join(" - "));
+        let mut desc = lang().casino_lotto_winning_prefix.replace("{nums}", &winning_str.join(" - "));
 
         let pay_winners = |winners: &[serenity::UserId], prize: i64, pool: &sqlx::SqlitePool, guild_id: serenity::GuildId| {
             let pool = pool.clone();
@@ -883,42 +889,44 @@ pub async fn run_lotto_drawing(ctx: &serenity::Context, pool: &sqlx::SqlitePool)
         };
 
         if winners_6.is_empty() {
-            desc.push_str(&format!("🎯 6 Treffer: niemand: Jackpot rollt weiter!\n"));
+            desc.push_str(lang().casino_lotto_no_jackpot);
         } else {
             let share = drawing.jackpot / winners_6.len() as i64;
             let mentions: Vec<String> = winners_6.iter().map(|u| format!("<@{}>", u)).collect();
-            desc.push_str(&format!("🏆 6 Treffer: {}: **{} Coins** (Jackpot)!\n", mentions.join(", "), share));
+            desc.push_str(
+                &lang().casino_lotto_jackpot_winner
+                    .replace("{mentions}", &mentions.join(", "))
+                    .replace("{share}", &share.to_string())
+            );
             pay_winners(&winners_6, share, pool, guild_id).await;
         }
         if !winners_5.is_empty() {
             let mentions: Vec<String> = winners_5.iter().map(|u| format!("<@{}>", u)).collect();
-            desc.push_str(&format!("🥇 5 Treffer: {}: **10.000 Coins**!\n", mentions.join(", ")));
+            desc.push_str(&lang().casino_lotto_5hits.replace("{mentions}", &mentions.join(", ")));
             pay_winners(&winners_5, 10_000, pool, guild_id).await;
         }
         if !winners_4.is_empty() {
             let mentions: Vec<String> = winners_4.iter().map(|u| format!("<@{}>", u)).collect();
-            desc.push_str(&format!("🥈 4 Treffer: {}: **1.000 Coins**\n", mentions.join(", ")));
+            desc.push_str(&lang().casino_lotto_4hits.replace("{mentions}", &mentions.join(", ")));
             pay_winners(&winners_4, 1_000, pool, guild_id).await;
         }
         if !winners_3.is_empty() {
             let mentions: Vec<String> = winners_3.iter().map(|u| format!("<@{}>", u)).collect();
-            desc.push_str(&format!("🥉 3 Treffer: {}: **200 Coins**\n", mentions.join(", ")));
+            desc.push_str(&lang().casino_lotto_3hits.replace("{mentions}", &mentions.join(", ")));
             pay_winners(&winners_3, 200, pool, guild_id).await;
         }
         if winners_3.is_empty() && winners_4.is_empty() && winners_5.is_empty() && winners_6.is_empty() {
-            desc.push_str("Kein Gewinner heute. Jackpot rollt weiter!");
-            // Carry jackpot to next drawing
+            desc.push_str(lang().casino_lotto_no_winners);
             if let Some(ch) = drawing.channel_id {
                 let next = crate::db::get_or_create_lotto_drawing(pool, guild_id, ch).await;
                 crate::db::add_to_lotto_jackpot(pool, next.id, drawing.jackpot).await;
             }
         }
 
-        // Announce in channel
         if let Some(channel_id) = drawing.channel_id {
             channel_id.send_message(&ctx.http, CreateMessage::new().embed(
                 CreateEmbed::new()
-                    .title("🎟️ Lotto-Ziehung!")
+                    .title(lang().casino_lotto_draw_title)
                     .description(desc)
                     .color(0xFFD700u32),
             )).await.ok();
@@ -961,18 +969,19 @@ pub async fn casino_stats(
     } else {
         "N/A".to_string()
     };
+    let _ = win_rate; // displayed in stats_games field via games_played
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
-            .title(format!("🎰 Casino-Stats: {}", target.name))
-            .field("Gesamt gesetzt",   format!("{} Coins", stats.total_wagered), true)
-            .field("Gesamt gewonnen",  format!("{} Coins", stats.total_won),     true)
-            .field("Gesamt verloren",  format!("{} Coins", stats.total_lost),    true)
-            .field("Nettogewinn",      format!("{:+} Coins", net),               true)
-            .field("Größter Gewinn",   format!("{} Coins", stats.biggest_win),   true)
-            .field("Spiele gespielt",  stats.games_played.to_string(),           true)
-            .field("Gewinnsträhne",    stats.win_streak.to_string(),             true)
-            .field("Pechsträhne",      stats.lose_streak.to_string(),            true)
+            .title(lang().casino_stats_title.replace("{name}", &target.name))
+            .field(lang().casino_stats_wagered,    format!("{} Coins", stats.total_wagered), true)
+            .field(lang().casino_stats_won,        format!("{} Coins", stats.total_won),     true)
+            .field(lang().casino_stats_lost,       format!("{} Coins", stats.total_lost),    true)
+            .field(lang().casino_stats_net,        format!("{:+} Coins", net),               true)
+            .field(lang().casino_stats_biggest,    format!("{} Coins", stats.biggest_win),   true)
+            .field(lang().casino_stats_games,      stats.games_played.to_string(),           true)
+            .field(lang().casino_stats_win_streak, stats.win_streak.to_string(),             true)
+            .field(lang().casino_stats_lose_streak,stats.lose_streak.to_string(),            true)
             .color(0x5865F2u32),
     ).ephemeral(true)).await?;
     Ok(())
@@ -989,7 +998,10 @@ pub async fn casino_rangliste(ctx: Context<'_>) -> Result<(), Error> {
 
     if board.is_empty() {
         ctx.send(poise::CreateReply::default().embed(
-            CreateEmbed::new().title("Casino-Rangliste").description("Noch keine Spieler.").color(0x5865F2u32),
+            CreateEmbed::new()
+                .title(lang().casino_rangliste_title)
+                .description(lang().casino_rangliste_empty)
+                .color(0x5865F2u32),
         )).await?;
         return Ok(());
     }
@@ -1001,7 +1013,7 @@ pub async fn casino_rangliste(ctx: Context<'_>) -> Result<(), Error> {
 
     ctx.send(poise::CreateReply::default().embed(
         CreateEmbed::new()
-            .title("🎰 Casino-Rangliste")
+            .title(lang().casino_rangliste_title)
             .description(lines.join("\n"))
             .color(0x5865F2u32),
     )).await?;
@@ -1022,11 +1034,11 @@ pub async fn casino_setup(
     crate::db::set_casino_channel(&ctx.data().db, guild_id, ch_id).await;
 
     let msg = match &kanal {
-        Some(c) => format!("Casino-Kanal auf <#{}> gesetzt.", c.id),
-        None    => "Casino-Befehle sind jetzt überall erlaubt.".to_string(),
+        Some(c) => lang().casino_setup_set.replace("{channel}", &c.id.to_string()),
+        None    => lang().casino_setup_everywhere.to_string(),
     };
     ctx.send(poise::CreateReply::default()
-        .embed(CreateEmbed::new().title("Casino-Setup").description(msg).color(0x57F287u32))
+        .embed(CreateEmbed::new().title(lang().casino_setup_title).description(msg).color(0x57F287u32))
         .ephemeral(true),
     ).await?;
     Ok(())
@@ -1040,8 +1052,8 @@ pub async fn casino_tresor(ctx: Context<'_>) -> Result<(), Error> {
     let balance  = crate::db::casino_vault_get(&ctx.data().db, guild_id).await;
     ctx.send(poise::CreateReply::default()
         .embed(CreateEmbed::new()
-            .title("🏦 Casino-Tresor")
-            .description(format!("Aktueller Saldo: **{} Coins**", balance))
+            .title(lang().casino_tresor_title)
+            .description(lang().casino_tresor_desc.replace("{balance}", &balance.to_string()))
             .color(0x5865F2u32))
         .ephemeral(true),
     ).await?;
@@ -1058,12 +1070,12 @@ pub async fn casino_limit(
     let guild_id = ctx.guild_id().unwrap();
     crate::db::set_casino_daily_limit(&ctx.data().db, guild_id, limit.max(0)).await;
     let msg = if limit <= 0 {
-        "Kein tägliches Verlustlimit.".to_string()
+        lang().casino_limit_none.to_string()
     } else {
-        format!("Tägliches Verlustlimit auf **{} Coins** gesetzt.", limit)
+        lang().casino_limit_set.replace("{limit}", &limit.to_string())
     };
     ctx.send(poise::CreateReply::default()
-        .embed(CreateEmbed::new().title("Casino-Limit").description(msg).color(0x57F287u32))
+        .embed(CreateEmbed::new().title(lang().casino_limit_title).description(msg).color(0x57F287u32))
         .ephemeral(true),
     ).await?;
     Ok(())
@@ -1086,8 +1098,12 @@ pub async fn casino_jackpot(
 
     ctx.send(poise::CreateReply::default()
         .embed(CreateEmbed::new()
-            .title("Jackpot erhöht")
-            .description(format!("**+{} Coins** zum Jackpot hinzugefügt.\nAktueller Jackpot: **{} Coins**", betrag, new_jp))
+            .title(lang().casino_jackpot_title)
+            .description(
+                lang().casino_jackpot_desc
+                    .replace("{added}", &betrag.to_string())
+                    .replace("{new}", &new_jp.to_string())
+            )
             .color(0xFFD700u32))
         .ephemeral(true),
     ).await?;

@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod db;
 mod events;
+mod lang;
 mod xp;
 
 use std::collections::{HashMap, VecDeque};
@@ -51,9 +52,9 @@ fn acquire_instance_lock() -> std::net::TcpListener {
             Ok(l) => return l,
             Err(_) => {
                 if attempts == 0 {
-                    eprintln!("[idf-soldat] Waiting for previous instance to release lock (port 27016)...");
+                    eprintln!("[fuckasskackbot] Waiting for previous instance to release lock (port 27016)...");
                 } else if attempts % 20 == 0 {
-                    eprintln!("[idf-soldat] Still waiting for instance lock ({} seconds elapsed)...", attempts / 2);
+                    eprintln!("[fuckasskackbot] Still waiting for instance lock ({} seconds elapsed)...", attempts / 2);
                 }
                 attempts += 1;
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -169,10 +170,7 @@ async fn main() {
                 // Wrong channel: send ephemeral notice and block
                 let _ = ctx.send(
                     poise::CreateReply::default()
-                        .content(format!(
-                            "❌ Dieser Befehl ist nur im Bot-Kanal <#{}> verfügbar.",
-                            bot_ch
-                        ))
+                        .content(crate::lang::lang().wrong_channel.replace("{channel}", &bot_ch.to_string()))
                         .ephemeral(true),
                 ).await;
 
@@ -332,6 +330,6 @@ async fn main() {
         .await
         .expect("Failed to create client");
 
-    tracing::info!("Starting idf-soldat...");
+    tracing::info!("Starting fuckasskackbot...");
     client.start().await.expect("Client error");
 }
