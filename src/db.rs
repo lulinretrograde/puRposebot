@@ -3,7 +3,7 @@ use poise::serenity_prelude::{ChannelId, GuildId, MessageId, RoleId, UserId};
 use sqlx::{sqlite::SqliteConnectOptions, Row, SqlitePool};
 use std::str::FromStr;
 
-use crate::config::LogConfig;
+use crate::config::{AutomodConfig, LogConfig};
 
 // ── init ──────────────────────────────────────────────────────────────────────
 
@@ -454,6 +454,49 @@ pub async fn init() -> SqlitePool {
     .execute(&pool)
     .await
     .expect("ticket_config Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS temp_bans (
+            guild_id     INTEGER NOT NULL,
+            user_id      INTEGER NOT NULL,
+            moderator_id INTEGER NOT NULL,
+            reason       TEXT    NOT NULL DEFAULT 'Kein Grund angegeben',
+            unban_at     INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("temp_bans Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mod_notes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id   INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            mod_id     INTEGER NOT NULL,
+            note       TEXT    NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("mod_notes Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS automod_config (
+            guild_id    INTEGER PRIMARY KEY,
+            anti_spam   INTEGER NOT NULL DEFAULT 0,
+            anti_invite INTEGER NOT NULL DEFAULT 0,
+            anti_caps   INTEGER NOT NULL DEFAULT 0,
+            spam_limit  INTEGER NOT NULL DEFAULT 5,
+            spam_window INTEGER NOT NULL DEFAULT 5,
+            log_channel INTEGER
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("automod_config Tabelle erstellen fehlgeschlagen");
 
     pool
 }
@@ -2265,6 +2308,169 @@ pub async fn set_ticket_reward(pool: &SqlitePool, amount: i64) {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .bind(amount.to_string())
+    .execute(pool)
+    .await;
+}
+
+// ── temp bans ──────────────────────────────────────────────────────────────────
+
+pub struct TempBanRow {
+    pub guild_id: GuildId,
+    pub user_id:  UserId,
+    pub reason:   String,
+}
+
+pub async fn add_temp_ban(
+    pool:         &SqlitePool,
+    guild_id:     GuildId,
+    user_id:      UserId,
+    moderator_id: UserId,
+    reason:       &str,
+    unban_at:     i64,
+) {
+    let _ = sqlx::query(
+        "INSERT INTO temp_bans (guild_id, user_id, moderator_id, reason, unban_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(guild_id, user_id) DO UPDATE SET
+             moderator_id = excluded.moderator_id,
+             reason       = excluded.reason,
+             unban_at     = excluded.unban_at",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .bind(moderator_id.get() as i64)
+    .bind(reason)
+    .bind(unban_at)
+    .execute(pool)
+    .await;
+}
+
+pub async fn get_expired_temp_bans(pool: &SqlitePool, now: i64) -> Vec<TempBanRow> {
+    sqlx::query("SELECT guild_id, user_id, reason FROM temp_bans WHERE unban_at <= ?")
+        .bind(now)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| TempBanRow {
+            guild_id: GuildId::new(r.get::<i64, _>("guild_id") as u64),
+            user_id:  UserId::new(r.get::<i64, _>("user_id") as u64),
+            reason:   r.get("reason"),
+        })
+        .collect()
+}
+
+pub async fn remove_temp_ban(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) {
+    let _ = sqlx::query("DELETE FROM temp_bans WHERE guild_id = ? AND user_id = ?")
+        .bind(guild_id.get() as i64)
+        .bind(user_id.get() as i64)
+        .execute(pool)
+        .await;
+}
+
+// ── mod notes ──────────────────────────────────────────────────────────────────
+
+pub struct ModNote {
+    pub id:         i64,
+    pub mod_id:     UserId,
+    pub note:       String,
+    pub created_at: i64,
+}
+
+pub async fn add_mod_note(
+    pool:       &SqlitePool,
+    guild_id:   GuildId,
+    user_id:    UserId,
+    mod_id:     UserId,
+    note:       &str,
+    created_at: i64,
+) {
+    let _ = sqlx::query(
+        "INSERT INTO mod_notes (guild_id, user_id, mod_id, note, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .bind(mod_id.get() as i64)
+    .bind(note)
+    .bind(created_at)
+    .execute(pool)
+    .await;
+}
+
+pub async fn get_mod_notes(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> Vec<ModNote> {
+    sqlx::query(
+        "SELECT id, mod_id, note, created_at FROM mod_notes WHERE guild_id = ? AND user_id = ? ORDER BY id ASC",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| ModNote {
+        id:         r.get("id"),
+        mod_id:     UserId::new(r.get::<i64, _>("mod_id") as u64),
+        note:       r.get("note"),
+        created_at: r.get("created_at"),
+    })
+    .collect()
+}
+
+pub async fn delete_mod_note(pool: &SqlitePool, guild_id: GuildId, note_id: i64) -> bool {
+    sqlx::query("DELETE FROM mod_notes WHERE id = ? AND guild_id = ?")
+        .bind(note_id)
+        .bind(guild_id.get() as i64)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false)
+}
+
+// ── automod config ─────────────────────────────────────────────────────────────
+
+pub async fn get_all_automod_configs(pool: &SqlitePool) -> Vec<(GuildId, AutomodConfig)> {
+    let rows = sqlx::query(
+        "SELECT guild_id, anti_spam, anti_invite, anti_caps, spam_limit, spam_window, log_channel FROM automod_config",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .map(|r| {
+            let guild_id = GuildId::new(r.get::<i64, _>("guild_id") as u64);
+            let cfg = AutomodConfig {
+                anti_spam:   r.get::<i64, _>("anti_spam") != 0,
+                anti_invite: r.get::<i64, _>("anti_invite") != 0,
+                anti_caps:   r.get::<i64, _>("anti_caps") != 0,
+                spam_limit:  r.get("spam_limit"),
+                spam_window: r.get("spam_window"),
+                log_channel: r.get::<Option<i64>, _>("log_channel").map(|v| ChannelId::new(v as u64)),
+            };
+            (guild_id, cfg)
+        })
+        .collect()
+}
+
+pub async fn save_automod_config(pool: &SqlitePool, guild_id: GuildId, cfg: &AutomodConfig) {
+    let _ = sqlx::query(
+        "INSERT INTO automod_config (guild_id, anti_spam, anti_invite, anti_caps, spam_limit, spam_window, log_channel)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(guild_id) DO UPDATE SET
+             anti_spam   = excluded.anti_spam,
+             anti_invite = excluded.anti_invite,
+             anti_caps   = excluded.anti_caps,
+             spam_limit  = excluded.spam_limit,
+             spam_window = excluded.spam_window,
+             log_channel = excluded.log_channel",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(cfg.anti_spam as i64)
+    .bind(cfg.anti_invite as i64)
+    .bind(cfg.anti_caps as i64)
+    .bind(cfg.spam_limit)
+    .bind(cfg.spam_window)
+    .bind(cfg.log_channel.map(|c| c.get() as i64))
     .execute(pool)
     .await;
 }

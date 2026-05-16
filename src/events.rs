@@ -80,6 +80,11 @@ pub async fn handle(
                     }
                 }
 
+                // Automod check (guild messages only)
+                if let Some(guild_id) = new_message.guild_id {
+                    automod_check(ctx, data, new_message, guild_id).await;
+                }
+
                 let has_content = !new_message.content.is_empty();
                 let has_attachments = !new_message.attachments.is_empty();
 
@@ -2307,4 +2312,109 @@ async fn handle_ticket_reply(
             )).await;
         }
     }
+}
+
+// ── automod ───────────────────────────────────────────────────────────────────
+
+async fn automod_check(
+    ctx:         &serenity::Context,
+    data:        &AppData,
+    msg:         &serenity::Message,
+    guild_id:    GuildId,
+) {
+    let cfg = {
+        let configs = data.automod_configs.lock().await;
+        match configs.get(&guild_id) {
+            Some(c) => c.clone(),
+            None => return,
+        }
+    };
+
+    if !cfg.anti_spam && !cfg.anti_invite && !cfg.anti_caps {
+        return;
+    }
+
+    let user_id = msg.author.id;
+    let content = &msg.content;
+
+    // ── anti-invite ──────────────────────────────────────────────────────────
+    if cfg.anti_invite && (content.contains("discord.gg/") || content.contains("discord.com/invite/")) {
+        let _ = msg.delete(ctx).await;
+        automod_log(ctx, &cfg, guild_id, user_id, "🔗 Anti-Invite", "Invite-Link gelöscht").await;
+        if let Ok(ch) = user_id.create_dm_channel(ctx).await {
+            let _ = ch.send_message(ctx, CreateMessage::new().content(
+                "⚠️ Deine Nachricht wurde gelöscht, da sie einen Discord-Invite-Link enthielt."
+            )).await;
+        }
+        return;
+    }
+
+    // ── anti-caps ────────────────────────────────────────────────────────────
+    if cfg.anti_caps {
+        let chars: Vec<char> = content.chars().collect();
+        if chars.len() > 20 {
+            let letter_count = chars.iter().filter(|c| c.is_alphabetic()).count();
+            let upper_count  = chars.iter().filter(|c| c.is_uppercase()).count();
+            if letter_count > 0 && upper_count * 100 / letter_count > 80 {
+                let _ = msg.delete(ctx).await;
+                automod_log(ctx, &cfg, guild_id, user_id, "🔤 Anti-Caps", "Nachricht mit zu vielen Großbuchstaben gelöscht").await;
+                if let Ok(ch) = user_id.create_dm_channel(ctx).await {
+                    let _ = ch.send_message(ctx, CreateMessage::new().content(
+                        "⚠️ Deine Nachricht wurde gelöscht, da sie zu viele Großbuchstaben enthielt."
+                    )).await;
+                }
+                return;
+            }
+        }
+    }
+
+    // ── anti-spam ────────────────────────────────────────────────────────────
+    if cfg.anti_spam {
+        let key = (guild_id, user_id);
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(cfg.spam_window as u64);
+        let limit  = cfg.spam_limit as usize;
+
+        let is_spam = {
+            let mut tracker = data.spam_tracker.lock().await;
+            let deque = tracker.entry(key).or_insert_with(std::collections::VecDeque::new);
+            // Prune old entries
+            while deque.front().map(|t: &std::time::Instant| t.elapsed() > window).unwrap_or(false) {
+                deque.pop_front();
+            }
+            deque.push_back(now);
+            deque.len() > limit
+        };
+
+        if is_spam {
+            // Auto-mute for 5 minutes
+            let until = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+            let _ = guild_id.edit_member(
+                ctx,
+                user_id,
+                serenity::EditMember::new().disable_communication_until(until),
+            ).await;
+            automod_log(ctx, &cfg, guild_id, user_id, "🔇 Anti-Spam", "Nutzer für 5 Minuten stummgeschaltet (Spam)").await;
+            // Clear their tracker so they don't get re-muted every message
+            data.spam_tracker.lock().await.remove(&key);
+        }
+    }
+}
+
+async fn automod_log(
+    ctx:      &serenity::Context,
+    cfg:      &crate::config::AutomodConfig,
+    guild_id: GuildId,
+    user_id:  serenity::UserId,
+    action:   &str,
+    reason:   &str,
+) {
+    let Some(ch) = cfg.log_channel else { return };
+    let embed = CreateEmbed::new()
+        .title(format!("🛡️ Automod: {}", action))
+        .color(0xFFA500u32)
+        .field("Nutzer", format!("<@{}>", user_id), true)
+        .field("Aktion", reason, true)
+        .timestamp(Timestamp::now());
+    send_log(ctx, ch, embed).await;
 }

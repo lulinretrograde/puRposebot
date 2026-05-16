@@ -1,5 +1,6 @@
 use poise::serenity_prelude as serenity;
 use serenity::{ChannelId, CreateEmbed, CreateEmbedAuthor, CreateMessage, RoleId, Timestamp, UserId};
+use chrono::Utc;
 
 use crate::{Context, Error};
 
@@ -791,3 +792,258 @@ pub async fn unjail(
 
     Ok(())
 }
+
+// ── duration parser ───────────────────────────────────────────────────────────
+
+/// Parses "1m" / "2h" / "3d" / "1w" into seconds. Returns None on bad input.
+pub fn parse_duration_secs(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.len() < 2 { return None; }
+    let (num_part, unit) = s.split_at(s.len() - 1);
+    let n: i64 = num_part.parse().ok()?;
+    if n <= 0 { return None; }
+    match unit {
+        "s" => Some(n),
+        "m" => Some(n * 60),
+        "h" => Some(n * 3600),
+        "d" => Some(n * 86400),
+        "w" => Some(n * 604800),
+        _ => None,
+    }
+}
+
+fn format_duration(secs: i64) -> String {
+    if secs >= 604800 {
+        let w = secs / 604800;
+        format!("{} Woche{}", w, if w == 1 { "" } else { "n" })
+    } else if secs >= 86400 {
+        let d = secs / 86400;
+        format!("{} Tag{}", d, if d == 1 { "" } else { "e" })
+    } else if secs >= 3600 {
+        let h = secs / 3600;
+        format!("{} Stunde{}", h, if h == 1 { "" } else { "n" })
+    } else {
+        let m = secs / 60;
+        format!("{} Minute{}", m, if m == 1 { "" } else { "n" })
+    }
+}
+
+// ── /tempban ──────────────────────────────────────────────────────────────────
+
+/// Einen Nutzer für eine bestimmte Dauer bannen (z.B. 1h, 30m, 7d)
+#[poise::command(
+    slash_command,
+    required_permissions = "BAN_MEMBERS",
+    guild_only
+)]
+pub async fn tempban(
+    ctx: Context<'_>,
+    #[description = "Der Nutzer, der gebannt werden soll"] user: serenity::User,
+    #[description = "Bann-Dauer (z.B. 30m, 2h, 7d, 1w)"] dauer: String,
+    #[description = "Grund für den Bann"] reason: Option<String>,
+) -> Result<(), Error> {
+    ctx.defer().await?;
+
+    let guild_id = ctx.guild_id().unwrap();
+    let reason = reason.as_deref().unwrap_or("Kein Grund angegeben");
+    let icon = guild_icon(ctx);
+
+    let secs = match parse_duration_secs(&dauer) {
+        Some(s) => s,
+        None => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(err("Ungültige Dauer", "Format: `30m`, `2h`, `7d`, `1w`. Max 28 Tage."))
+                    .ephemeral(true),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    if secs > 28 * 86400 {
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(err("Dauer zu lang", "Maximale Bann-Dauer: 28 Tage. Nutze `/ban` für dauerhafte Banns."))
+                .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let unban_at = Utc::now().timestamp() + secs;
+
+    match guild_id.ban_with_reason(ctx.http(), user.id, 0, reason).await {
+        Ok(_) => {
+            crate::db::add_temp_ban(
+                &ctx.data().db,
+                guild_id,
+                user.id,
+                ctx.author().id,
+                reason,
+                unban_at,
+            ).await;
+
+            let duration_text = format_duration(secs);
+
+            ctx.send(
+                poise::CreateReply::default()
+                    .content(format!("<@{}> wurde temporär gebannt.", user.id))
+                    .embed(mod_embed(&user, &icon, vec![
+                        ("**Grund:**",  format!("> {}", reason),         true),
+                        ("**Dauer:**",  format!("> {}", duration_text),  true),
+                        ("**Endet:**",  format!("> <t:{}:R>", unban_at), true),
+                    ])),
+            )
+            .await?;
+            send_mod_log(ctx, mod_log_embed("⏱️ Temporärer Bann", 0xFFA500, ctx.author(), &user, vec![
+                ("Grund",  reason.to_string(),            true),
+                ("Dauer",  duration_text,                 true),
+                ("Endet",  format!("<t:{}:R>", unban_at), true),
+            ])).await;
+        }
+        Err(e) if e.to_string().contains("403") => {
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(err("Fehlende Berechtigungen", "Ich habe keine Berechtigung, diesen Nutzer zu bannen."))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+        Err(e) => {
+            tracing::error!("Temporärer Bann fehlgeschlagen: {e}");
+            ctx.send(
+                poise::CreateReply::default()
+                    .embed(err("Fehler", &format!("Bann fehlgeschlagen: {e}")))
+                    .ephemeral(true),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+// ── /notiz ────────────────────────────────────────────────────────────────────
+
+/// Moderator-Notizen zu einem Nutzer verwalten
+#[poise::command(
+    slash_command,
+    required_permissions = "MODERATE_MEMBERS",
+    guild_only,
+    subcommands("notiz_hinzufuegen", "notiz_liste", "notiz_loeschen")
+)]
+pub async fn notiz(_ctx: Context<'_>) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Notiz zu einem Nutzer hinzufügen
+#[poise::command(
+    slash_command,
+    required_permissions = "MODERATE_MEMBERS",
+    guild_only,
+    rename = "hinzufügen"
+)]
+pub async fn notiz_hinzufuegen(
+    ctx: Context<'_>,
+    #[description = "Nutzer, zu dem die Notiz gehört"] user: serenity::User,
+    #[description = "Notizinhalt (nur für Moderatoren sichtbar)"] notiz_text: String,
+) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+
+    let guild_id  = ctx.guild_id().unwrap();
+    let now       = Utc::now().timestamp();
+
+    crate::db::add_mod_note(&ctx.data().db, guild_id, user.id, ctx.author().id, &notiz_text, now).await;
+
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(ok("Notiz gespeichert", &format!("Notiz zu <@{}> wurde hinzugefügt.", user.id)))
+            .ephemeral(true),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Notizen zu einem Nutzer anzeigen
+#[poise::command(
+    slash_command,
+    required_permissions = "MODERATE_MEMBERS",
+    guild_only,
+    rename = "liste"
+)]
+pub async fn notiz_liste(
+    ctx: Context<'_>,
+    #[description = "Nutzer, dessen Notizen angezeigt werden sollen"] user: serenity::User,
+) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+
+    let guild_id = ctx.guild_id().unwrap();
+    let notes    = crate::db::get_mod_notes(&ctx.data().db, guild_id, user.id).await;
+
+    if notes.is_empty() {
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(info("Keine Notizen", &format!("Keine Notizen für <@{}>.", user.id)))
+                .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let lines: Vec<String> = notes
+        .iter()
+        .map(|n| format!("`[ID {}]` <@{}> • <t:{}:d>: {}", n.id, n.mod_id, n.created_at, n.note))
+        .collect();
+
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(
+                CreateEmbed::new()
+                    .title(format!("📋 Notizen: {}", user.tag()))
+                    .description(lines.join("\n"))
+                    .color(0x5865F2u32),
+            )
+            .ephemeral(true),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Notiz anhand ihrer ID löschen
+#[poise::command(
+    slash_command,
+    required_permissions = "MODERATE_MEMBERS",
+    guild_only,
+    rename = "löschen"
+)]
+pub async fn notiz_loeschen(
+    ctx: Context<'_>,
+    #[description = "ID der Notiz (aus /notiz liste)"] id: i64,
+) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+
+    let guild_id = ctx.guild_id().unwrap();
+    let deleted  = crate::db::delete_mod_note(&ctx.data().db, guild_id, id).await;
+
+    if deleted {
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(ok("Notiz gelöscht", &format!("Notiz `{}` wurde gelöscht.", id)))
+                .ephemeral(true),
+        )
+        .await?;
+    } else {
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(err("Nicht gefunden", "Notiz nicht gefunden oder gehört nicht zu diesem Server."))
+                .ephemeral(true),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+

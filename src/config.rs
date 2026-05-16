@@ -91,3 +91,18 @@ pub enum TicketAction {
 
 /// Owner user ID → (ticket_id, action) waiting for a DM reply to use as message body.
 pub type AwaitingTicketReply = Arc<Mutex<HashMap<UserId, (i64, TicketAction)>>>;
+
+// ── automod ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Clone)]
+pub struct AutomodConfig {
+    pub anti_spam:   bool,
+    pub anti_invite: bool,
+    pub anti_caps:   bool,
+    pub spam_limit:  i64,
+    pub spam_window: i64,
+    pub log_channel: Option<ChannelId>,
+}
+
+pub type AutomodConfigs = Arc<Mutex<HashMap<GuildId, AutomodConfig>>>;
+pub type SpamTracker = Arc<Mutex<HashMap<(GuildId, UserId), VecDeque<Instant>>>>;

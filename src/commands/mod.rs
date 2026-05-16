@@ -1,4 +1,5 @@
 pub mod antinuke;
+pub mod automod;
 pub mod casino;
 pub mod economy;
 pub mod fishing;
@@ -25,4 +26,6 @@ pub use setup::{baserole, bot_channel, setup_jail, setup_logs};
 pub use shop::{kaufen, laden, prestige};
 pub use utility::{bug, stealemoji, stealsticker, ticket_reward};
 pub use antinuke::antinuke;
+pub use automod::automod_cmd;
+pub use moderation::{tempban, notiz};
 pub use welcome::welcome_channel;

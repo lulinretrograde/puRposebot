@@ -13,8 +13,8 @@ use poise::serenity_prelude as serenity;
 use tokio::sync::Mutex;
 
 use config::{
-    AwaitingTicketReply, BugCooldowns, InviteCache, JoinTracker, LockdownState, LogConfigs,
-    MessageCache, NukeCounters, RaidCounters, VoiceSessions, XpCooldowns,
+    AutomodConfigs, AwaitingTicketReply, BugCooldowns, InviteCache, JoinTracker, LockdownState,
+    LogConfigs, MessageCache, NukeCounters, RaidCounters, SpamTracker, VoiceSessions, XpCooldowns,
 };
 
 // ── types ────────────────────────────────────────────────────────────────────
@@ -37,6 +37,8 @@ pub struct AppData {
     pub lockdown_state:    LockdownState,     // guilds currently in lockdown
     pub bug_cooldowns:          BugCooldowns,          // ephemeral, /bug rate limiting
     pub awaiting_ticket_reply:  AwaitingTicketReply,   // ephemeral, ticket DM reply state
+    pub automod_configs:   AutomodConfigs,    // in-memory cache, DB-backed
+    pub spam_tracker:      SpamTracker,       // ephemeral, per-user message timestamps
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -137,6 +139,9 @@ async fn main() {
                 commands::ueberweisung(),
                 commands::level_coins_migrate(),
                 commands::antinuke(),
+                commands::automod_cmd(),
+                commands::tempban(),
+                commands::notiz(),
                 commands::bug(),
                 commands::ticket_reward(),
             ],
@@ -267,10 +272,37 @@ async fn main() {
                     db::get_all_log_configs(&pool).await.into_iter().collect();
                 tracing::info!("Log-Konfigurationen geladen: {} Server", config_data.len());
 
+                // Load automod configs from DB into memory
+                let automod_data: HashMap<_, _> =
+                    db::get_all_automod_configs(&pool).await.into_iter().collect();
+                tracing::info!("Automod-Konfigurationen geladen: {} Server", automod_data.len());
+
+                // Temp ban background task: check every 60s, unban expired bans
+                {
+                    let pool_bg  = pool.clone();
+                    let ctx_bg   = ctx.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                            let now = chrono::Utc::now().timestamp();
+                            let expired = db::get_expired_temp_bans(&pool_bg, now).await;
+                            for ban in expired {
+                                let _ = ban.guild_id.unban(&ctx_bg, ban.user_id).await;
+                                db::remove_temp_ban(&pool_bg, ban.guild_id, ban.user_id).await;
+                                tracing::info!(
+                                    "Temporärer Bann abgelaufen: user {} in guild {}",
+                                    ban.user_id, ban.guild_id
+                                );
+                            }
+                        }
+                    });
+                }
+
                 let xp_cooldowns:  XpCooldowns  = Arc::new(Mutex::new(HashMap::new()));
                 let nuke_counters: NukeCounters  = Arc::new(Mutex::new(HashMap::new()));
                 let raid_counters: RaidCounters  = Arc::new(Mutex::new(HashMap::new()));
                 let bug_cooldowns: BugCooldowns  = Arc::new(Mutex::new(HashMap::new()));
+                let spam_tracker:  SpamTracker   = Arc::new(Mutex::new(HashMap::new()));
 
                 // Periodic cleanup: drop expired entries from in-memory maps every 10 minutes
                 {
@@ -278,6 +310,7 @@ async fn main() {
                     let bug_cd = bug_cooldowns.clone();
                     let nuke   = nuke_counters.clone();
                     let raid   = raid_counters.clone();
+                    let spam   = spam_tracker.clone();
                     tokio::spawn(async move {
                         loop {
                             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
@@ -291,6 +324,9 @@ async fn main() {
                                 !deque.is_empty()
                             });
                             raid.lock().await.retain(|_, deque: &mut std::collections::VecDeque<(std::time::Instant, _)>| {
+                                !deque.is_empty()
+                            });
+                            spam.lock().await.retain(|_, deque: &mut std::collections::VecDeque<std::time::Instant>| {
                                 !deque.is_empty()
                             });
                         }
@@ -310,6 +346,8 @@ async fn main() {
                     lockdown_state:     Arc::new(Mutex::new(HashMap::new())),
                     bug_cooldowns,
                     awaiting_ticket_reply:  Arc::new(Mutex::new(HashMap::new())),
+                    automod_configs:    Arc::new(Mutex::new(automod_data)),
+                    spam_tracker,
                 })
             })
         })
