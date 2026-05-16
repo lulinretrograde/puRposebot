@@ -144,6 +144,13 @@ async fn main() {
                 commands::notiz(),
                 commands::reaktionsrolle(),
                 commands::aufgaben(),
+                commands::profil(),
+                commands::bio(),
+                commands::heiraten(),
+                commands::scheiden(),
+                commands::rep(),
+                commands::rep_rangliste(),
+                commands::geburtstag(),
                 commands::bug(),
                 commands::ticket_reward(),
             ],
@@ -160,6 +167,7 @@ async fn main() {
                     "level", "leaderboard",
                     "laden", "kaufen", "prestige", "ueberweisung",
                     "aufgaben",
+                    "profil", "heiraten", "scheiden", "rep", "rep-rangliste",
                 ];
 
                 if !RESTRICTED.contains(&ctx.command().name.as_str()) {
@@ -279,6 +287,34 @@ async fn main() {
                 let automod_data: HashMap<_, _> =
                     db::get_all_automod_configs(&pool).await.into_iter().collect();
                 tracing::info!("Automod-Konfigurationen geladen: {} Server", automod_data.len());
+
+                // Birthday announcements: check every hour, announce in bot channel
+                {
+                    let pool_bg = pool.clone();
+                    let ctx_bg  = ctx.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                            let now   = chrono::Utc::now();
+                            use chrono::Datelike;
+                            let month = now.month() as u8;
+                            let day   = now.day()   as u8;
+                            let guilds = db::get_all_guilds_with_birthday_today(&pool_bg, month, day).await;
+                            for gid in guilds {
+                                let users = db::get_birthdays_today(&pool_bg, gid, month, day).await;
+                                if users.is_empty() { continue; }
+                                let Some(bot_ch) = db::get_bot_channel(&pool_bg, gid).await else { continue };
+                                let mentions: Vec<String> = users.iter().map(|u| format!("<@{}>", u)).collect();
+                                let _ = bot_ch.send_message(&ctx_bg, serenity::CreateMessage::new().embed(
+                                    serenity::CreateEmbed::new()
+                                        .title("🎂 Geburtstag!")
+                                        .description(format!("Alles Gute zum Geburtstag {}! 🎉", mentions.join(", ")))
+                                        .color(0xFF73FAu32)
+                                )).await;
+                            }
+                        }
+                    });
+                }
 
                 // Temp ban background task: check every 60s, unban expired bans
                 {

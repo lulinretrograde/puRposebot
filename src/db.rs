@@ -499,6 +499,58 @@ pub async fn init() -> SqlitePool {
     .expect("automod_config Tabelle erstellen fehlgeschlagen");
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS profiles (
+            guild_id INTEGER NOT NULL,
+            user_id  INTEGER NOT NULL,
+            bio      TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (guild_id, user_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("profiles Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS marriages (
+            guild_id   INTEGER NOT NULL,
+            user1_id   INTEGER NOT NULL,
+            user2_id   INTEGER NOT NULL,
+            married_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, user1_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("marriages Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS reputation (
+            guild_id     INTEGER NOT NULL,
+            user_id      INTEGER NOT NULL,
+            rep          INTEGER NOT NULL DEFAULT 0,
+            last_gave_at INTEGER NOT NULL DEFAULT 0,
+            last_gave_to INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("reputation Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS birthdays (
+            guild_id INTEGER NOT NULL,
+            user_id  INTEGER NOT NULL,
+            month    INTEGER NOT NULL,
+            day      INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("birthdays Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS daily_missions (
             guild_id   INTEGER NOT NULL,
             user_id    INTEGER NOT NULL,
@@ -2651,4 +2703,204 @@ pub async fn claim_daily_bonus(pool: &SqlitePool, guild_id: GuildId, user_id: Us
     .await
     .map(|r| r.rows_affected() > 0)
     .unwrap_or(false)
+}
+
+// ── profiles ───────────────────────────────────────────────────────────────────
+
+pub async fn get_bio(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> String {
+    sqlx::query_scalar::<_, String>(
+        "SELECT bio FROM profiles WHERE guild_id = ? AND user_id = ?",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None)
+    .unwrap_or_default()
+}
+
+pub async fn set_bio(pool: &SqlitePool, guild_id: GuildId, user_id: UserId, bio: &str) {
+    let _ = sqlx::query(
+        "INSERT INTO profiles (guild_id, user_id, bio) VALUES (?, ?, ?)
+         ON CONFLICT(guild_id, user_id) DO UPDATE SET bio = excluded.bio",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .bind(bio)
+    .execute(pool)
+    .await;
+}
+
+// ── marriages ──────────────────────────────────────────────────────────────────
+
+/// Returns the partner's UserId for a user, or None.
+pub async fn get_partner(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> Option<UserId> {
+    let gid = guild_id.get() as i64;
+    let uid = user_id.get() as i64;
+    let row = sqlx::query(
+        "SELECT user1_id, user2_id FROM marriages
+         WHERE guild_id = ? AND (user1_id = ? OR user2_id = ?)",
+    )
+    .bind(gid).bind(uid).bind(uid)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None)?;
+
+    let u1: i64 = row.get("user1_id");
+    let u2: i64 = row.get("user2_id");
+    if u1 == uid { Some(UserId::new(u2 as u64)) } else { Some(UserId::new(u1 as u64)) }
+}
+
+/// Attempt to create marriage. Returns false if either user already married.
+pub async fn create_marriage(pool: &SqlitePool, guild_id: GuildId, user1: UserId, user2: UserId) -> bool {
+    let gid = guild_id.get() as i64;
+    let u1  = user1.get() as i64;
+    let u2  = user2.get() as i64;
+    let now = chrono::Utc::now().timestamp();
+
+    // Check both not already married
+    let already = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM marriages WHERE guild_id = ? AND (user1_id IN (?,?) OR user2_id IN (?,?))",
+    )
+    .bind(gid).bind(u1).bind(u2).bind(u1).bind(u2)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(1);
+
+    if already > 0 { return false; }
+
+    let r = sqlx::query(
+        "INSERT INTO marriages (guild_id, user1_id, user2_id, married_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(gid).bind(u1).bind(u2).bind(now)
+    .execute(pool)
+    .await;
+
+    r.map(|_| true).unwrap_or(false)
+}
+
+/// Dissolve a marriage. Returns false if no marriage found.
+pub async fn divorce(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> bool {
+    let gid = guild_id.get() as i64;
+    let uid = user_id.get() as i64;
+    sqlx::query(
+        "DELETE FROM marriages WHERE guild_id = ? AND (user1_id = ? OR user2_id = ?)",
+    )
+    .bind(gid).bind(uid).bind(uid)
+    .execute(pool)
+    .await
+    .map(|r| r.rows_affected() > 0)
+    .unwrap_or(false)
+}
+
+// ── reputation ─────────────────────────────────────────────────────────────────
+
+pub struct RepRow {
+    pub rep:          i64,
+    pub last_gave_at: i64,
+    pub last_gave_to: i64,
+}
+
+pub async fn get_rep(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> RepRow {
+    let row = sqlx::query(
+        "SELECT rep, last_gave_at, last_gave_to FROM reputation WHERE guild_id = ? AND user_id = ?",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    match row {
+        Some(r) => RepRow { rep: r.get("rep"), last_gave_at: r.get("last_gave_at"), last_gave_to: r.get("last_gave_to") },
+        None    => RepRow { rep: 0, last_gave_at: 0, last_gave_to: 0 },
+    }
+}
+
+pub async fn give_rep(pool: &SqlitePool, guild_id: GuildId, giver: UserId, receiver: UserId) {
+    let now = chrono::Utc::now().timestamp();
+    let gid = guild_id.get() as i64;
+    // Increment receiver's rep
+    let _ = sqlx::query(
+        "INSERT INTO reputation (guild_id, user_id, rep) VALUES (?, ?, 1)
+         ON CONFLICT(guild_id, user_id) DO UPDATE SET rep = rep + 1",
+    )
+    .bind(gid).bind(receiver.get() as i64)
+    .execute(pool)
+    .await;
+    // Update giver's cooldown
+    let _ = sqlx::query(
+        "INSERT INTO reputation (guild_id, user_id, last_gave_at, last_gave_to) VALUES (?, ?, ?, ?)
+         ON CONFLICT(guild_id, user_id) DO UPDATE SET last_gave_at = excluded.last_gave_at, last_gave_to = excluded.last_gave_to",
+    )
+    .bind(gid).bind(giver.get() as i64).bind(now).bind(receiver.get() as i64)
+    .execute(pool)
+    .await;
+}
+
+pub async fn get_rep_leaderboard(pool: &SqlitePool, guild_id: GuildId) -> Vec<(UserId, i64)> {
+    sqlx::query("SELECT user_id, rep FROM reputation WHERE guild_id = ? ORDER BY rep DESC LIMIT 10")
+        .bind(guild_id.get() as i64)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (UserId::new(r.get::<i64, _>("user_id") as u64), r.get::<i64, _>("rep")))
+        .collect()
+}
+
+// ── birthdays ──────────────────────────────────────────────────────────────────
+
+pub async fn set_birthday(pool: &SqlitePool, guild_id: GuildId, user_id: UserId, month: u8, day: u8) {
+    let _ = sqlx::query(
+        "INSERT INTO birthdays (guild_id, user_id, month, day) VALUES (?, ?, ?, ?)
+         ON CONFLICT(guild_id, user_id) DO UPDATE SET month = excluded.month, day = excluded.day",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .bind(month as i64)
+    .bind(day as i64)
+    .execute(pool)
+    .await;
+}
+
+pub async fn get_birthday(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> Option<(u8, u8)> {
+    let row = sqlx::query(
+        "SELECT month, day FROM birthdays WHERE guild_id = ? AND user_id = ?",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None)?;
+    Some((row.get::<i64, _>("month") as u8, row.get::<i64, _>("day") as u8))
+}
+
+/// Returns all users with a birthday on (month, day).
+pub async fn get_birthdays_today(pool: &SqlitePool, guild_id: GuildId, month: u8, day: u8) -> Vec<UserId> {
+    sqlx::query("SELECT user_id FROM birthdays WHERE guild_id = ? AND month = ? AND day = ?")
+        .bind(guild_id.get() as i64)
+        .bind(month as i64)
+        .bind(day as i64)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| UserId::new(r.get::<i64, _>("user_id") as u64))
+        .collect()
+}
+
+/// Returns all guilds that have at least one birthday today.
+pub async fn get_all_guilds_with_birthday_today(pool: &SqlitePool, month: u8, day: u8) -> Vec<GuildId> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT DISTINCT guild_id FROM birthdays WHERE month = ? AND day = ?",
+    )
+    .bind(month as i64)
+    .bind(day as i64)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|v| GuildId::new(v as u64))
+    .collect()
 }
