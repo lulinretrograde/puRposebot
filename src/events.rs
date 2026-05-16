@@ -80,9 +80,10 @@ pub async fn handle(
                     }
                 }
 
-                // Automod check (guild messages only)
+                // Automod + counting check (guild messages only)
                 if let Some(guild_id) = new_message.guild_id {
                     automod_check(ctx, data, new_message, guild_id).await;
+                    counting_check(ctx, data, new_message, guild_id).await;
                 }
 
                 let has_content = !new_message.content.is_empty();
@@ -2311,6 +2312,46 @@ async fn handle_ticket_reply(
             let _ = msg.reply(ctx, format!(
                 "✅ Ticket #{} erledigt, Kanal geschlossen. **{} Coins** an <@{}> gutgeschrieben.",
                 ticket_id, ticket.reward, ticket.reporter_id,
+            )).await;
+        }
+    }
+}
+
+// ── counting channel ──────────────────────────────────────────────────────────
+
+async fn counting_check(
+    ctx:      &serenity::Context,
+    data:     &AppData,
+    msg:      &serenity::Message,
+    guild_id: GuildId,
+) {
+    let state = crate::db::get_counting_state(&data.db, guild_id).await;
+    let Some(ch) = state.channel_id else { return };
+    if ch != msg.channel_id { return; }
+
+    let Ok(number) = msg.content.trim().parse::<i64>() else {
+        let _ = msg.delete(ctx).await;
+        return;
+    };
+
+    match crate::db::advance_count(&data.db, guild_id, msg.author.id, number).await {
+        Ok(n) => {
+            let _ = msg.react(ctx, serenity::ReactionType::Unicode("✅".to_string())).await;
+            if n % 100 == 0 {
+                let _ = ch.send_message(ctx, CreateMessage::new().content(
+                    format!("🎉 **{}** — Super! Weiter so!", n)
+                )).await;
+            }
+        }
+        Err(expected) => {
+            let reason = if state.last_user == msg.author.id.get() as i64 {
+                "Dieselbe Person darf nicht zweimal hintereinander zählen!".to_string()
+            } else {
+                format!("Falsche Zahl! Erwartet: **{}**, erhalten: **{}**. Zurück zu 0!", expected, number)
+            };
+            let _ = msg.react(ctx, serenity::ReactionType::Unicode("❌".to_string())).await;
+            let _ = ch.send_message(ctx, CreateMessage::new().content(
+                format!("💥 <@{}> hat den Zähler zurückgesetzt! {}", msg.author.id, reason)
             )).await;
         }
     }

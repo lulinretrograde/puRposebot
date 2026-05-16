@@ -151,6 +151,11 @@ async fn main() {
                 commands::rep(),
                 commands::rep_rangliste(),
                 commands::geburtstag(),
+                commands::trivia(),
+                commands::tipprennen(),
+                commands::zaehlen_setup(),
+                commands::viergewinnt(),
+                commands::tictactoe(),
                 commands::bug(),
                 commands::ticket_reward(),
             ],
@@ -168,6 +173,7 @@ async fn main() {
                     "laden", "kaufen", "prestige", "ueberweisung",
                     "aufgaben",
                     "profil", "heiraten", "scheiden", "rep", "rep-rangliste",
+                    "trivia", "tipprennen", "viergewinnt", "tictactoe",
                 ];
 
                 if !RESTRICTED.contains(&ctx.command().name.as_str()) {

@@ -1,6 +1,7 @@
 pub mod antinuke;
 pub mod automod;
 pub mod casino;
+pub mod minigames;
 pub mod missions;
 pub mod reaction_roles;
 pub mod social;
@@ -31,6 +32,7 @@ pub use utility::{bug, stealemoji, stealsticker, ticket_reward};
 pub use antinuke::antinuke;
 pub use automod::automod_cmd;
 pub use moderation::{tempban, notiz};
+pub use minigames::{tictactoe, tipprennen, trivia, viergewinnt, zaehlen_setup};
 pub use missions::aufgaben;
 pub use reaction_roles::reaktionsrolle;
 pub use social::{bio, geburtstag, heiraten, profil, rep, rep_rangliste, scheiden};

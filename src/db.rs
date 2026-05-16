@@ -499,6 +499,18 @@ pub async fn init() -> SqlitePool {
     .expect("automod_config Tabelle erstellen fehlgeschlagen");
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS counting_config (
+            guild_id   INTEGER PRIMARY KEY,
+            channel_id INTEGER,
+            current    INTEGER NOT NULL DEFAULT 0,
+            last_user  INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("counting_config Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS profiles (
             guild_id INTEGER NOT NULL,
             user_id  INTEGER NOT NULL,
@@ -2902,5 +2914,88 @@ pub async fn get_all_guilds_with_birthday_today(pool: &SqlitePool, month: u8, da
     .unwrap_or_default()
     .into_iter()
     .map(|v| GuildId::new(v as u64))
+    .collect()
+}
+
+// ── counting channel ───────────────────────────────────────────────────────────
+
+pub struct CountingState {
+    pub channel_id: Option<ChannelId>,
+    pub current:    i64,
+    pub last_user:  i64,
+}
+
+pub async fn get_counting_state(pool: &SqlitePool, guild_id: GuildId) -> CountingState {
+    let row = sqlx::query(
+        "SELECT channel_id, current, last_user FROM counting_config WHERE guild_id = ?",
+    )
+    .bind(guild_id.get() as i64)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    match row {
+        Some(r) => CountingState {
+            channel_id: r.get::<Option<i64>, _>("channel_id").map(|v| ChannelId::new(v as u64)),
+            current:    r.get("current"),
+            last_user:  r.get("last_user"),
+        },
+        None => CountingState { channel_id: None, current: 0, last_user: 0 },
+    }
+}
+
+pub async fn set_counting_channel(pool: &SqlitePool, guild_id: GuildId, channel_id: Option<ChannelId>) {
+    let _ = sqlx::query(
+        "INSERT INTO counting_config (guild_id, channel_id) VALUES (?, ?)
+         ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(channel_id.map(|c| c.get() as i64))
+    .execute(pool)
+    .await;
+}
+
+/// Returns Ok(new_count) if valid, Err(expected) if wrong number or same user.
+pub async fn advance_count(pool: &SqlitePool, guild_id: GuildId, user_id: UserId, number: i64) -> Result<i64, i64> {
+    let state   = get_counting_state(pool, guild_id).await;
+    let expected = state.current + 1;
+
+    if number != expected || state.last_user == user_id.get() as i64 {
+        // Reset
+        let _ = sqlx::query(
+            "UPDATE counting_config SET current = 0, last_user = 0 WHERE guild_id = ?",
+        )
+        .bind(guild_id.get() as i64)
+        .execute(pool)
+        .await;
+        return Err(expected);
+    }
+
+    let _ = sqlx::query(
+        "UPDATE counting_config SET current = ?, last_user = ? WHERE guild_id = ?",
+    )
+    .bind(number)
+    .bind(user_id.get() as i64)
+    .bind(guild_id.get() as i64)
+    .execute(pool)
+    .await;
+
+    Ok(number)
+}
+
+/// Returns all guilds with a configured counting channel.
+pub async fn get_all_counting_channels(pool: &SqlitePool) -> Vec<(GuildId, ChannelId)> {
+    sqlx::query(
+        "SELECT guild_id, channel_id FROM counting_config WHERE channel_id IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .filter_map(|r| {
+        let gid = GuildId::new(r.get::<i64, _>("guild_id") as u64);
+        let ch  = r.get::<Option<i64>, _>("channel_id").map(|v| ChannelId::new(v as u64))?;
+        Some((gid, ch))
+    })
     .collect()
 }
