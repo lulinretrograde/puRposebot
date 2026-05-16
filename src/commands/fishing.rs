@@ -144,6 +144,7 @@ pub async fn angeln(ctx: Context<'_>) -> Result<(), Error> {
 
     crate::db::set_fishing_cooldown(&ctx.data().db, guild_id, user_id, now).await;
     crate::db::add_fish_to_inventory(&ctx.data().db, guild_id, user_id, fish.id, now).await;
+    crate::db::increment_mission(&ctx.data().db, guild_id, user_id, "fish_done").await;
 
     let price = current_price(&ctx.data().db, fish).await;
 

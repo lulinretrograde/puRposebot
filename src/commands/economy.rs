@@ -286,6 +286,7 @@ pub async fn klauen(
         let actual_stolen = stolen.min(opfer_balance).max(0);
         crate::db::add_coins(&ctx.data().db, guild_id, opfer.id, -actual_stolen).await;
         let new_balance = crate::db::add_coins(&ctx.data().db, guild_id, dieb.id, actual_stolen).await;
+        crate::db::increment_mission(&ctx.data().db, guild_id, dieb.id, "steal_done").await;
 
         let templates = lang().steal_success_templates;
         let template = { let mut rng = rand::thread_rng(); templates[rng.gen_range(0..templates.len())] };

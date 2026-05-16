@@ -143,6 +143,7 @@ async fn main() {
                 commands::tempban(),
                 commands::notiz(),
                 commands::reaktionsrolle(),
+                commands::aufgaben(),
                 commands::bug(),
                 commands::ticket_reward(),
             ],
@@ -158,6 +159,7 @@ async fn main() {
                     "angeln", "inventar", "alles-verkaufen", "fischmarkt", "angelshop", "rute-kaufen",
                     "level", "leaderboard",
                     "laden", "kaufen", "prestige", "ueberweisung",
+                    "aufgaben",
                 ];
 
                 if !RESTRICTED.contains(&ctx.command().name.as_str()) {

@@ -1,6 +1,7 @@
 pub mod antinuke;
 pub mod automod;
 pub mod casino;
+pub mod missions;
 pub mod reaction_roles;
 pub mod economy;
 pub mod fishing;
@@ -29,5 +30,6 @@ pub use utility::{bug, stealemoji, stealsticker, ticket_reward};
 pub use antinuke::antinuke;
 pub use automod::automod_cmd;
 pub use moderation::{tempban, notiz};
+pub use missions::aufgaben;
 pub use reaction_roles::reaktionsrolle;
 pub use welcome::welcome_channel;

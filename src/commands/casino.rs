@@ -111,6 +111,7 @@ async fn pay_win(
 
     let new_bal = crate::db::casino_transfer(pool, guild_id, user_id, profit).await;
     crate::db::update_casino_stats(pool, guild_id, user_id, bet, true, profit, gross).await;
+    crate::db::increment_mission(pool, guild_id, user_id, "casino_done").await;
     (new_bal, profit, streak_bonus)
 }
 
@@ -123,6 +124,7 @@ async fn pay_loss(
     crate::db::casino_transfer(pool, guild_id, user_id, -bet).await;
     crate::db::add_casino_daily_loss(pool, guild_id, user_id, bet).await;
     let (_, new_lose) = crate::db::update_casino_stats(pool, guild_id, user_id, bet, false, 0, 0).await;
+    crate::db::increment_mission(pool, guild_id, user_id, "casino_done").await;
 
     let consolation = new_lose % CONSOLATION_STREAK == 0;
     if consolation {

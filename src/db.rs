@@ -499,6 +499,22 @@ pub async fn init() -> SqlitePool {
     .expect("automod_config Tabelle erstellen fehlgeschlagen");
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS daily_missions (
+            guild_id   INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            date       TEXT    NOT NULL,
+            fish_done  INTEGER NOT NULL DEFAULT 0,
+            steal_done INTEGER NOT NULL DEFAULT 0,
+            casino_done INTEGER NOT NULL DEFAULT 0,
+            bonus_claimed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id, date)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("daily_missions Tabelle erstellen fehlgeschlagen");
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS reaction_roles (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id   INTEGER NOT NULL,
@@ -2568,4 +2584,71 @@ pub async fn get_reaction_role(
     .await
     .unwrap_or(None)
     .map(|v| RoleId::new(v as u64))
+}
+
+// ── daily missions ─────────────────────────────────────────────────────────────
+
+pub struct DailyMissions {
+    pub fish_done:    i64,
+    pub steal_done:   i64,
+    pub casino_done:  i64,
+    pub bonus_claimed: bool,
+}
+
+pub async fn get_daily_missions(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> DailyMissions {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let row = sqlx::query(
+        "SELECT fish_done, steal_done, casino_done, bonus_claimed FROM daily_missions
+         WHERE guild_id = ? AND user_id = ? AND date = ?",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .bind(&today)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    match row {
+        Some(r) => DailyMissions {
+            fish_done:     r.get("fish_done"),
+            steal_done:    r.get("steal_done"),
+            casino_done:   r.get("casino_done"),
+            bonus_claimed: r.get::<i64, _>("bonus_claimed") != 0,
+        },
+        None => DailyMissions { fish_done: 0, steal_done: 0, casino_done: 0, bonus_claimed: false },
+    }
+}
+
+pub async fn increment_mission(pool: &SqlitePool, guild_id: GuildId, user_id: UserId, field: &str) -> i64 {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let query = format!(
+        "INSERT INTO daily_missions (guild_id, user_id, date, {field})
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT(guild_id, user_id, date) DO UPDATE SET {field} = {field} + 1
+         RETURNING {field}",
+        field = field
+    );
+    sqlx::query_scalar::<_, i64>(&query)
+        .bind(guild_id.get() as i64)
+        .bind(user_id.get() as i64)
+        .bind(&today)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+}
+
+/// Mark bonus as claimed. Returns true if this is the first claim today.
+pub async fn claim_daily_bonus(pool: &SqlitePool, guild_id: GuildId, user_id: UserId) -> bool {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    sqlx::query(
+        "UPDATE daily_missions SET bonus_claimed = 1
+         WHERE guild_id = ? AND user_id = ? AND date = ? AND bonus_claimed = 0",
+    )
+    .bind(guild_id.get() as i64)
+    .bind(user_id.get() as i64)
+    .bind(&today)
+    .execute(pool)
+    .await
+    .map(|r| r.rows_affected() > 0)
+    .unwrap_or(false)
 }
