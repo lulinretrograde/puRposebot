@@ -1,4 +1,4 @@
-# fuckasskackbot
+# puRposebot
 
 A feature-rich Discord bot written in Rust with economy, fishing, casino, leveling, moderation, and anti-nuke systems. Originally built for a German-speaking server, but fully localizable via a single environment variable.
 
